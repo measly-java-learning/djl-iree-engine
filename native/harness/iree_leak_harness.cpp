@@ -115,7 +115,7 @@ void ImportEscapeCheck(const std::vector<std::byte>& vmfb) {
 }  // namespace
 
 int main(int argc, char** argv) {
-  const char* path = argc > 1 ? argv[1] : IREE_DJL_ADD_VMFB;
+  const char* path = (argc > 1 && argv[1][0]) ? argv[1] : IREE_DJL_ADD_VMFB;
   const int iterations = argc > 2 ? std::atoi(argv[2]) : 100;
 
   auto vmfb = ReadFile(path);
