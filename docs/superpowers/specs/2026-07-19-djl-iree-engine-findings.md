@@ -102,6 +102,49 @@ proceeding to a MobileNet v2 parity check as the next milestone, per the plan be
   (compiler wheel + from-source runtime built at the same tag) rather than depending on an
   ephemeral nightly.
 
+## Runtime API choice (high-level vs low-level) and when to revisit
+
+IREE exposes two C runtime APIs. The public docs
+([c-api/#runtime-api](https://iree.dev/reference/bindings/c-api/#runtime-api)) recommend the
+low-level API for "custom bindings or when integrating into larger projects." This skeleton
+uses a **hybrid, backed by the high-level API**, and does so deliberately:
+
+- **High-level (`iree/runtime/api.h`)** for lifecycle and invocation —
+  `iree_runtime_instance` → `iree_hal_device` → `iree_runtime_session` → `iree_runtime_call`
+  (load, `iree_runtime_session_lookup_function`, `iree_runtime_call_invoke`).
+- **Low-level HAL (`iree_hal_*`)** directly for buffer marshaling —
+  `iree_hal_allocator_import_buffer`, `iree_hal_buffer_view_create`, `iree_hal_buffer_map_read`,
+  `iree_hal_buffer_view_allocate_buffer_copy`. This is exactly where control matters (the
+  WRAPPED/STAGED import decision), and it is already at the low level.
+
+**Why this is sound here, not a compromise:** the API choice is fully encapsulated behind
+`IreeRuntime::Load`/`Invoke`. Neither the JNI shim nor the DJL layer knows which runtime API
+sits underneath, so migrating to the low-level VM API later is a facade-internal refactor, not
+an interface break. The high-level API is officially supported and stable, is the surface the
+header-verification checklist targeted, and kept the facade small — which is what made the
+go/no-go gate reachable quickly.
+
+**What the "prefer low-level" advice points at.** The high-level `session` bundles three things
+the low-level API lets you separate: the VM **instance**, the HAL **device**, and the VM
+**context**. Reasons to reach past the convenience layer:
+
+1. **Sharing the instance/device across many models — the concrete one for this codebase.**
+   `RuntimeState` currently creates a full `instance + device + session` per `IreeRuntime`
+   (i.e. per loaded model). Fine for one model; wasteful for a server hosting many models or
+   per-thread engines, where one instance + device could back many lightweight per-model
+   contexts. This is the first place the low-level API (or a shared high-level instance) would
+   earn its keep.
+2. **Explicit driver registration.** The high-level path calls
+   `iree_runtime_instance_options_use_all_available_drivers`, registering every compiled-in
+   driver. Harmless with a runtime trimmed to `local-sync`; a larger project usually wants
+   explicit registration.
+3. **Custom native VM modules (custom ops), streaming/async invocation, custom module
+   resolution order** — all out of scope here, all reasons to own the VM context directly.
+
+**Verdict:** not a show-stopper, and the right call for a go/no-go skeleton. Revisit the
+per-handle `instance + device + session` construction if this grows into a multi-model or
+high-concurrency host — a bounded, facade-internal change when that time comes.
+
 ## Recommended next milestone
 
 **MobileNet v2 parity.** It exercises real tensor sizes, which is what makes the STAGED
