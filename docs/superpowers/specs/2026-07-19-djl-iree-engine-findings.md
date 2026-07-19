@@ -145,6 +145,33 @@ the low-level API lets you separate: the VM **instance**, the HAL **device**, an
 per-handle `instance + device + session` construction if this grows into a multi-model or
 high-concurrency host — a bounded, facade-internal change when that time comes.
 
+## Consideration: operator coverage / custom ops (unvalidated — likely YAGNI until a concrete consumer)
+
+Captured as context, not planned work. Revisit only when a real consumer model demands it.
+
+Because IREE is a **compiler**, not a runtime with a fixed kernel library, "custom op" means
+something different than it did for the ExecuTorch engine. There, a model needing `nn.LSTM`
+went poorly: the decomposed graph wasn't well-served by the kernel library/delegate, forcing a
+hand-written first-party op (`etnp::lstm`) to be whole-archived into the shim. IREE instead
+code-generates kernels from the tensor algebra, so the **decomposition that hurt ExecuTorch is
+what IREE wants** — a standard LSTM should compile fine with no custom op and nothing to link.
+
+The risk doesn't disappear, it **moves from runtime-kernel coverage to frontend import
+coverage**: does the PyTorch→StableHLO path (torch-mlir / iree-turbine) cleanly lower the op and
+its awkward variants (bidirectional, packed/padded sequences, dynamic lengths)? That is an
+export-time problem, generally more tractable than writing and linking a kernel.
+
+Genuine IREE custom ops (a custom native VM module / `custom_call`, or a hand-written ukernel
+overriding codegen) are **rare for standard inference** and only needed when an op can't be
+expressed in the input dialect, or to hand-tune a hot path. If they ever are needed, registering
+a custom VM module means owning the VM **context** — i.e. it is the **second reason (after
+multi-model instance sharing) to drop the facade to the low-level API** (see the API-choice
+section above).
+
+None of this is exercised by the skeleton (it runs a trivial `add`). The cheap way to de-risk it
+for a specific model is a standalone `torch.export` → iree-turbine/torch-mlir → `iree-compile`
+spike — no engine work required — which directly probes the frontend-import variable.
+
 ## Recommended next milestone
 
 **MobileNet v2 parity.** It exercises real tensor sizes, which is what makes the STAGED
