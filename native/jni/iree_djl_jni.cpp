@@ -26,9 +26,19 @@ IreeRuntime* AsRuntime(jlong handle) {
 // The single native->jthrow translation point, fed by whatever
 // IREE_CHECK_OR_THROW raised. Keeps JNI exception logic out of the facade and
 // out of the sanitizer harness.
+//
+// If the cached class is unavailable (NewGlobalRef failed in JNI_OnLoad, or
+// JNI_OnLoad never ran), fall back to a fresh, uncached FindClass so a
+// facade failure is never silently swallowed.
 void ThrowJava(JNIEnv* env, const char* message) {
   if (g_runtime_exception != nullptr) {
     env->ThrowNew(g_runtime_exception, message);
+    return;
+  }
+  jclass fallback = env->FindClass("java/lang/RuntimeException");
+  if (fallback != nullptr) {
+    env->ThrowNew(fallback, message);
+    env->DeleteLocalRef(fallback);
   }
 }
 
@@ -105,6 +115,10 @@ Java_org_measly_iree_jni_IreeNative_invoke(JNIEnv* env, jclass, jlong handle,
   std::vector<std::vector<int64_t>> shapes(static_cast<size_t>(count));
 
   jint* types = env->GetIntArrayElements(inputTypes, nullptr);
+  if (types == nullptr) {
+    ThrowJava(env, "failed to acquire input element types (out of memory?)");
+    return nullptr;
+  }
 
   for (jsize i = 0; i < count; ++i) {
     jobject buffer = env->GetObjectArrayElement(inputBuffers, i);
@@ -144,6 +158,16 @@ Java_org_measly_iree_jni_IreeNative_invoke(JNIEnv* env, jclass, jlong handle,
                                     "(Ljava/nio/ByteBuffer;[JI)V");
   if (ctor == nullptr) return nullptr;
 
+  // Loop-invariant: java/nio/ByteBuffer's class and its allocateDirect
+  // methodID don't change per output, so look them up once here rather than
+  // inside the loop (avoids per-iteration local-ref accumulation and
+  // redundant lookups).
+  jclass bb = env->FindClass("java/nio/ByteBuffer");
+  if (bb == nullptr) return nullptr;
+  jmethodID allocate = env->GetStaticMethodID(bb, "allocateDirect",
+                                              "(I)Ljava/nio/ByteBuffer;");
+  if (allocate == nullptr) return nullptr;
+
   jobjectArray result =
       env->NewObjectArray(static_cast<jsize>(outputs.size()), tensor_class, nullptr);
 
@@ -151,11 +175,16 @@ Java_org_measly_iree_jni_IreeNative_invoke(JNIEnv* env, jclass, jlong handle,
     auto& out = outputs[i];
     // Allocate a direct buffer the JVM owns and copy into it. The facade's
     // OutputBuffer dies with this function; nothing native outlives the call.
-    jclass bb = env->FindClass("java/nio/ByteBuffer");
-    jmethodID allocate = env->GetStaticMethodID(bb, "allocateDirect",
-                                                "(I)Ljava/nio/ByteBuffer;");
     jobject owned = env->CallStaticObjectMethod(
         bb, allocate, static_cast<jint>(out.data.size()));
+    if (owned == nullptr || env->ExceptionCheck()) {
+      // allocateDirect failed (e.g. OutOfMemoryError). A pending exception
+      // will propagate to Java on its own once we return; calling
+      // GetDirectBufferAddress/memcpy on a null result with an exception
+      // pending is undefined behavior, so bail out cleanly without also
+      // throwing over it.
+      return nullptr;
+    }
     std::memcpy(env->GetDirectBufferAddress(owned), out.data.data(),
                 out.data.size());
 
