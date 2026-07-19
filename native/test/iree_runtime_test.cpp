@@ -36,7 +36,7 @@ TEST_CASE("loads a valid vmfb", "[runtime]") {
 namespace {
 // IREE_HAL_ELEMENT_TYPE_FLOAT_32 as an int32_t, so the facade header needs no
 // IREE include. Asserted equal to the real constant in the test below.
-constexpr int32_t kF32 = 0x00000120;
+constexpr int32_t kF32 = 0x21000020;
 }  // namespace
 
 TEST_CASE("golden vector: add", "[runtime]") {
@@ -127,63 +127,29 @@ TEST_CASE("rejects a shape mismatch", "[runtime][errors]") {
 }
 
 // EMPIRICAL DEVIATION FROM THE BRIEF: this case does not throw. module.add's
-// entry function has a fixed compiled signature (tensor<4xf32>), and neither
-// iree_hal_buffer_view_create nor iree_runtime_call_invoke validate the
-// element type a caller declares on an input buffer view against that
-// signature -- byte length and shape are what get checked (see "rejects a
-// shape mismatch" above, which DOES throw). Handing in int32 data of the
-// right byte length is therefore accepted, and the compiled f32 kernel reads
-// the int32 bit patterns as float32. {1,2,3,4} as float32 bit patterns are
-// subnormals (~1.4e-45 .. 5.6e-45); empirically, this codegen flushes
-// subnormals to zero, so the observed result is a silent, wrong all-zero
-// answer rather than an exception. That is a real (if surprising) finding,
-// not a dropped status: IREE_CHECK_OR_THROW still sees an OK status because
-// IREE itself considers the call well-formed. Per the brief, we assert on
-// the observable (wrong) result instead of forcing a throw -- but the
-// assertions below are deliberately codegen-independent (not-the-correct-
-// answer, and finite), since the exact flush-to-zero behavior could change
-// with an IREE/LLVM upgrade for reasons unrelated to what this test proves.
-TEST_CASE("wrong element type is silently miscomputed, not rejected",
-          "[runtime][errors]") {
+// entry function has a fixed compiled signature (tensor<4xf32>). IREE
+// validates the caller-declared element type on an input buffer view against
+// that signature via hal.buffer_view.assert (see
+// iree/runtime/src/iree/modules/hal/utils/buffer_diagnostics.c): a real,
+// recognized-but-mismatched type tag (si32 in place of the expected f32) is
+// rejected with INVALID_ARGUMENT, surfaced here as a thrown
+// std::runtime_error. (An earlier version of this test used a bogus,
+// non-IREE-encoded placeholder tag that hal.buffer_view.assert could not
+// recognize as any type, so it silently slipped through to a miscomputed
+// result instead of being rejected -- that was an artifact of the bad
+// constant, not of IREE ignoring element type. With the real si32 encoding,
+// IREE's own validation catches the mismatch.)
+TEST_CASE("rejects a valid-but-mismatched element type", "[runtime][errors]") {
   auto bytes = ReadFile(kAddVmfb);
   auto runtime = IreeRuntime::Load(bytes, kEntryPoint);
 
   const int32_t lhs[4] = {1, 2, 3, 4};
   const int32_t rhs[4] = {1, 2, 3, 4};
-  constexpr int32_t kI32 = 0x00000220;  // declared (but unvalidated) type tag
+  constexpr int32_t kI32 = 0x11000020;  // real si32 type tag; model expects f32
   std::vector<measly::iree::InputDesc> inputs = {
       {lhs, sizeof(lhs), {4}, kI32},
       {rhs, sizeof(rhs), {4}, kI32},
   };
 
-  auto outputs = runtime->Invoke(inputs);
-
-  REQUIRE(outputs.size() == 1);
-  REQUIRE(outputs[0].data.size() == 4 * sizeof(float));
-  const float* result = reinterpret_cast<const float*>(outputs[0].data.data());
-
-  // Empirically observed (not asserted as a hard gate -- this detail is
-  // codegen-dependent): the subnormal float32 bit patterns get flushed to
-  // zero by the compiled kernel, so on this build the result comes back as
-  // exactly {0, 0, 0, 0}.
-  WARN("observed result: " << result[0] << " " << result[1] << " "
-                            << result[2] << " " << result[3]
-                            << " (empirically all-zero from subnormal "
-                               "flush-to-zero on this codegen -- not "
-                               "asserted, since it could change with an "
-                               "IREE/LLVM upgrade)");
-
-  // The two invariants this test actually cares about, independent of any
-  // particular codegen's subnormal handling:
-  // 1. The call was NOT rejected, but the answer is NOT the correct int32
-  //    add ({2, 4, 6, 8}) reinterpreted as float bit patterns either --
-  //    i.e. it silently computed something other than the right answer.
-  const bool matches_correct_sum = result[0] == 2.0f && result[1] == 4.0f &&
-                                    result[2] == 6.0f && result[3] == 8.0f;
-  REQUIRE_FALSE(matches_correct_sum);
-  // 2. Whatever it silently computed is at least finite -- no crash, no
-  //    NaN/inf smuggled out of the mismatched-type call.
-  for (int i = 0; i < 4; ++i) {
-    REQUIRE(std::isfinite(result[i]));
-  }
+  REQUIRE_THROWS_AS(runtime->Invoke(inputs), std::runtime_error);
 }

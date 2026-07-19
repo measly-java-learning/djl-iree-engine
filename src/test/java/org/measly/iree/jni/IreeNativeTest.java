@@ -14,7 +14,7 @@ import org.junit.jupiter.api.Test;
 
 class IreeNativeTest {
 
-    private static final int F32 = 0x00000120;
+    private static final int F32 = 0x21000020;
     private static final String ENTRY_POINT = "module.add";
 
     private static byte[] addVmfb() throws IOException {

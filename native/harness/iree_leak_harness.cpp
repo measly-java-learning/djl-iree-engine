@@ -16,7 +16,7 @@ using measly::iree::InputDesc;
 using measly::iree::IreeRuntime;
 
 namespace {
-constexpr int32_t kF32 = 0x00000120;
+constexpr int32_t kF32 = 0x21000020;
 constexpr const char* kEntryPoint = "module.add";
 
 std::vector<std::byte> ReadFile(const char* path) {
@@ -73,7 +73,7 @@ void ErrorPathCycle(const std::vector<std::byte>& vmfb) {
   try { runtime->Invoke(bad_shape); } catch (const std::runtime_error&) {}
 
   const int32_t ints[4] = {1, 2, 3, 4};
-  constexpr int32_t kI32 = 0x00000220;
+  constexpr int32_t kI32 = 0x11000020;
   std::vector<InputDesc> bad_type = {
       {ints, sizeof(ints), {4}, kI32},
       {ints, sizeof(ints), {4}, kI32},
