@@ -41,3 +41,11 @@ add_executable(iree_leak_harness harness/iree_leak_harness.cpp)
 target_link_libraries(iree_leak_harness PRIVATE iree_djl_core)
 target_compile_definitions(iree_leak_harness PRIVATE
     IREE_DJL_ADD_VMFB="${CMAKE_CURRENT_LIST_DIR}/../src/test/resources/models/add.vmfb")
+
+# JNI shim (Task 7): thin marshalling layer over iree_djl_core.
+find_package(JNI REQUIRED)
+add_library(iree_djl SHARED jni/iree_djl_jni.cpp)
+target_include_directories(iree_djl PRIVATE ${JNI_INCLUDE_DIRS})
+target_link_libraries(iree_djl PRIVATE iree_djl_core)
+# Hide IREE's symbols so they cannot collide with anything else in the JVM.
+target_link_options(iree_djl PRIVATE -Wl,--exclude-libs,ALL)
