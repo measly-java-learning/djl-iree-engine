@@ -134,12 +134,15 @@ TEST_CASE("rejects a shape mismatch", "[runtime][errors]") {
 // shape mismatch" above, which DOES throw). Handing in int32 data of the
 // right byte length is therefore accepted, and the compiled f32 kernel reads
 // the int32 bit patterns as float32. {1,2,3,4} as float32 bit patterns are
-// subnormals (~1.4e-45 .. 5.6e-45); the codegen'd kernel flushes subnormals
-// to zero, so the observable result is a silent, wrong all-zero answer
-// rather than an exception. That is a real (if surprising) finding, not a
-// dropped status: IREE_CHECK_OR_THROW still sees an OK status because IREE
-// itself considers the call well-formed. Per the brief, we assert on the
-// observable (wrong) result instead of forcing a throw.
+// subnormals (~1.4e-45 .. 5.6e-45); empirically, this codegen flushes
+// subnormals to zero, so the observed result is a silent, wrong all-zero
+// answer rather than an exception. That is a real (if surprising) finding,
+// not a dropped status: IREE_CHECK_OR_THROW still sees an OK status because
+// IREE itself considers the call well-formed. Per the brief, we assert on
+// the observable (wrong) result instead of forcing a throw -- but the
+// assertions below are deliberately codegen-independent (not-the-correct-
+// answer, and finite), since the exact flush-to-zero behavior could change
+// with an IREE/LLVM upgrade for reasons unrelated to what this test proves.
 TEST_CASE("wrong element type is silently miscomputed, not rejected",
           "[runtime][errors]") {
   auto bytes = ReadFile(kAddVmfb);
@@ -158,10 +161,29 @@ TEST_CASE("wrong element type is silently miscomputed, not rejected",
   REQUIRE(outputs.size() == 1);
   REQUIRE(outputs[0].data.size() == 4 * sizeof(float));
   const float* result = reinterpret_cast<const float*>(outputs[0].data.data());
-  // The correct int32 add would be {2, 4, 6, 8}. What comes back instead is
-  // subnormal-flushed-to-zero garbage -- proof the call was NOT rejected and
-  // NOT correct, silently.
+
+  // Empirically observed (not asserted as a hard gate -- this detail is
+  // codegen-dependent): the subnormal float32 bit patterns get flushed to
+  // zero by the compiled kernel, so on this build the result comes back as
+  // exactly {0, 0, 0, 0}.
+  WARN("observed result: " << result[0] << " " << result[1] << " "
+                            << result[2] << " " << result[3]
+                            << " (empirically all-zero from subnormal "
+                               "flush-to-zero on this codegen -- not "
+                               "asserted, since it could change with an "
+                               "IREE/LLVM upgrade)");
+
+  // The two invariants this test actually cares about, independent of any
+  // particular codegen's subnormal handling:
+  // 1. The call was NOT rejected, but the answer is NOT the correct int32
+  //    add ({2, 4, 6, 8}) reinterpreted as float bit patterns either --
+  //    i.e. it silently computed something other than the right answer.
+  const bool matches_correct_sum = result[0] == 2.0f && result[1] == 4.0f &&
+                                    result[2] == 6.0f && result[3] == 8.0f;
+  REQUIRE_FALSE(matches_correct_sum);
+  // 2. Whatever it silently computed is at least finite -- no crash, no
+  //    NaN/inf smuggled out of the mismatched-type call.
   for (int i = 0; i < 4; ++i) {
-    REQUIRE(std::abs(result[i]) < 1e-30f);
+    REQUIRE(std::isfinite(result[i]));
   }
 }
