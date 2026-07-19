@@ -1,4 +1,5 @@
 #include <catch2/catch_test_macros.hpp>
+#include <cmath>
 #include <cstddef>
 #include <cstdlib>
 #include <cstring>
@@ -89,4 +90,78 @@ TEST_CASE("import outcome is recorded for every input", "[runtime][import]") {
        << (outcomes[0] == IreeRuntime::ImportOutcome::kWrapped ? "WRAPPED"
                                                                : "STAGED"));
   free(aligned);
+}
+
+// These four tests exist to WALK the error paths, not merely to assert
+// messages. Task 6 runs them under LSan, where a dropped iree_status_t on any
+// of these paths shows up as a leak. Error paths are the least hand-tested
+// code in any runtime, which is exactly why they get forced here.
+
+TEST_CASE("rejects a corrupt vmfb", "[runtime][errors]") {
+  std::vector<std::byte> garbage(256, std::byte{0xAB});
+  REQUIRE_THROWS_AS(IreeRuntime::Load(garbage, kEntryPoint), std::runtime_error);
+}
+
+TEST_CASE("rejects an empty vmfb", "[runtime][errors]") {
+  std::vector<std::byte> empty;
+  REQUIRE_THROWS_AS(IreeRuntime::Load(empty, kEntryPoint), std::runtime_error);
+}
+
+TEST_CASE("rejects an unknown entry point", "[runtime][errors]") {
+  auto bytes = ReadFile(kAddVmfb);
+  REQUIRE_THROWS_AS(IreeRuntime::Load(bytes, "module.does_not_exist"),
+                    std::runtime_error);
+}
+
+TEST_CASE("rejects a shape mismatch", "[runtime][errors]") {
+  auto bytes = ReadFile(kAddVmfb);
+  auto runtime = IreeRuntime::Load(bytes, kEntryPoint);
+
+  const float lhs[8] = {1, 2, 3, 4, 5, 6, 7, 8};  // model expects 4xf32
+  const float rhs[8] = {1, 2, 3, 4, 5, 6, 7, 8};
+  std::vector<measly::iree::InputDesc> inputs = {
+      {lhs, sizeof(lhs), {8}, kF32},
+      {rhs, sizeof(rhs), {8}, kF32},
+  };
+  REQUIRE_THROWS_AS(runtime->Invoke(inputs), std::runtime_error);
+}
+
+// EMPIRICAL DEVIATION FROM THE BRIEF: this case does not throw. module.add's
+// entry function has a fixed compiled signature (tensor<4xf32>), and neither
+// iree_hal_buffer_view_create nor iree_runtime_call_invoke validate the
+// element type a caller declares on an input buffer view against that
+// signature -- byte length and shape are what get checked (see "rejects a
+// shape mismatch" above, which DOES throw). Handing in int32 data of the
+// right byte length is therefore accepted, and the compiled f32 kernel reads
+// the int32 bit patterns as float32. {1,2,3,4} as float32 bit patterns are
+// subnormals (~1.4e-45 .. 5.6e-45); the codegen'd kernel flushes subnormals
+// to zero, so the observable result is a silent, wrong all-zero answer
+// rather than an exception. That is a real (if surprising) finding, not a
+// dropped status: IREE_CHECK_OR_THROW still sees an OK status because IREE
+// itself considers the call well-formed. Per the brief, we assert on the
+// observable (wrong) result instead of forcing a throw.
+TEST_CASE("wrong element type is silently miscomputed, not rejected",
+          "[runtime][errors]") {
+  auto bytes = ReadFile(kAddVmfb);
+  auto runtime = IreeRuntime::Load(bytes, kEntryPoint);
+
+  const int32_t lhs[4] = {1, 2, 3, 4};
+  const int32_t rhs[4] = {1, 2, 3, 4};
+  constexpr int32_t kI32 = 0x00000220;  // declared (but unvalidated) type tag
+  std::vector<measly::iree::InputDesc> inputs = {
+      {lhs, sizeof(lhs), {4}, kI32},
+      {rhs, sizeof(rhs), {4}, kI32},
+  };
+
+  auto outputs = runtime->Invoke(inputs);
+
+  REQUIRE(outputs.size() == 1);
+  REQUIRE(outputs[0].data.size() == 4 * sizeof(float));
+  const float* result = reinterpret_cast<const float*>(outputs[0].data.data());
+  // The correct int32 add would be {2, 4, 6, 8}. What comes back instead is
+  // subnormal-flushed-to-zero garbage -- proof the call was NOT rejected and
+  // NOT correct, silently.
+  for (int i = 0; i < 4; ++i) {
+    REQUIRE(std::abs(result[i]) < 1e-30f);
+  }
 }
