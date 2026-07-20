@@ -183,7 +183,10 @@ alone delivers:
 
 - **`local-task` HAL driver → CPU multithreading (intra-op parallelism).** The clearest variant
   axis. The skeleton deliberately used `local-sync` (inline, single-threaded) so there are **no
-  IREE-internal threads** — that is why the skeleton has no TSan leg at all. `local-task` adds a
+  IREE-internal threads** — that is why the skeleton has no TSan leg at all. **[Superseded —
+  see "Status as of v3.11.0-3" below and the findings doc: Task 4 measured `local-sync` as
+  TSan-clean at runtime even with `local-task` compiled in, so the skeleton's TSan leg exists
+  after all.]** `local-task` adds a
   worker pool for throughput on multicore CPUs. Flag alone unlocks it; caveat: it reintroduces
   internal threads, so a `local-task` variant is also where TSan coverage must come back.
 - **Tracy tracing → per-dispatch latency / execution timelines.** Build-gated
@@ -213,7 +216,7 @@ alone delivers:
 
 | Variant | Drivers / loaders | Tracing / stats | Unlocks | Engine caveat |
 |---|---|---|---|---|
-| `minimal` (bare) | `local-sync` + `embedded-elf` (+ `system-library`) | none | smallest, single-threaded; the skeleton's target | none — TSan-free by construction |
+| `minimal` (bare) | `local-sync` + `embedded-elf` (+ `system-library`) | none | smallest, single-threaded; the skeleton's target | none — TSan-free by construction **[Superseded — see "Status as of v3.11.0-3" below and the findings doc: this is measured true of the shipped `default` variant at runtime too, so a separate `minimal` variant is not actually needed for this.]** |
 | `default` / `perf` | + `local-task` | none | CPU intra-op parallelism / throughput | reintroduces internal threads ⇒ needs TSan coverage |
 | `devtools` | as `default` | Tracy + allocation stats | per-dispatch latency, footprint assertions | tracing overhead ⇒ keep separate from `perf` |
 | `gpu` (separate axis, later) | + a GPU driver + matching loader | optional | GPU inference | needs GPU-target compiler + non-CPU marshaling work |

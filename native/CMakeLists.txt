@@ -27,20 +27,23 @@ list(APPEND CMAKE_PREFIX_PATH "${iree_runtime_dist_SOURCE_DIR}")
 find_package(IreeRuntimeDist REQUIRED)
 
 option(IREE_DJL_SANITIZE "Build with ASan/LSan" OFF)
+option(IREE_DJL_TSAN "Build with ThreadSanitizer" OFF)
+
+# ASan and TSan are mutually exclusive -- never enable both at once. Checked
+# immediately after both options are declared and before either flag block
+# below, so generation fails before any conflicting flags are ever applied.
+if(IREE_DJL_SANITIZE AND IREE_DJL_TSAN)
+  message(FATAL_ERROR "IREE_DJL_SANITIZE (ASan) and IREE_DJL_TSAN are mutually exclusive; enable at most one.")
+endif()
+
 if(IREE_DJL_SANITIZE)
   add_compile_options(-fsanitize=address -fno-omit-frame-pointer -g)
   add_link_options(-fsanitize=address)
 endif()
 
-# ASan and TSan are mutually exclusive -- never enable both at once.
-option(IREE_DJL_TSAN "Build with ThreadSanitizer" OFF)
 if(IREE_DJL_TSAN)
   add_compile_options(-fsanitize=thread -fno-omit-frame-pointer -g)
   add_link_options(-fsanitize=thread)
-endif()
-
-if(IREE_DJL_SANITIZE AND IREE_DJL_TSAN)
-  message(FATAL_ERROR "IREE_DJL_SANITIZE (ASan) and IREE_DJL_TSAN are mutually exclusive; enable at most one.")
 endif()
 
 # Link smoke test (Task 1)

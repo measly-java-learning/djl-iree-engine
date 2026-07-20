@@ -17,7 +17,10 @@ source tree, no IREE build tree, and no compiler required** to build or test thi
 - JDK 17 (e.g. `/usr/lib/jvm/zulu-17-amd64`) — set `JAVA_HOME` to it.
 - CMake, Ninja, and a C++20 (gcc/clang) compiler.
 - Network access, to fetch the pinned `iree-runtime-dist` tarball (SHA256-verified against
-  `native/cmake/IreeRuntimePin.cmake`; a tampered hash fails hard at configure time).
+  `native/cmake/IreeRuntimePin.cmake`; a tampered hash fails hard at configure time). The
+  native *test* build additionally fetches Catch2 (v3.5.2) via `FetchContent`'s
+  `GIT_REPOSITORY`/`GIT_TAG` (unpinned by hash) — this needs `git` on `PATH` and network
+  access to GitHub as a second host.
 
 `iree-compile` from pip is needed **only** if you want to regenerate the test fixture
 (`add.vmfb`), which is otherwise committed:
@@ -49,8 +52,13 @@ ASAN_OPTIONS=detect_leaks=1 ./native/build/iree_leak_harness "" 400
 
 # TSan gate (measured, not guaranteed by construction — see below):
 rm -rf native/build && ./native/build.sh -DIREE_DJL_TSAN=ON
-./native/build/iree_leak_harness "" 100
+setarch $(uname -m) -R ./native/build/iree_leak_harness "" 100
 ```
+
+The TSan invocation needs `setarch $(uname -m) -R` (disabling ASLR for that one process):
+TSan's shadow-memory mapping conflicts with ASLR, and on a host with ASLR enabled (the
+default, `/proc/sys/kernel/randomize_va_space` = 2) it dies immediately with `FATAL:
+ThreadSanitizer: unexpected memory mapping` without it.
 
 `IREE_DJL_SANITIZE` (ASan) and `IREE_DJL_TSAN` are mutually exclusive; enabling both fails
 fast at CMake configure time with a clear error rather than a cryptic compiler failure.

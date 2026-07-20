@@ -1,6 +1,10 @@
 // Plain native main(). The JVM is deliberately out of the picture: libjvm's
 // allocator, JIT, and signal handlers generate ASan/TSan noise that would bury
-// real findings. No TSan leg: the local-sync driver has no internal threads.
+// real findings. `local-task` (with its worker pool) is compiled into the dist
+// artifact, but selecting `local-sync` at runtime was *measured* to keep this
+// process single-threaded (TSan clean, zero clone/clone3 syscalls, Threads: 1
+// per /proc/<pid>/status) -- so this same harness serves as both the ASan/LSan
+// and TSan vehicle. See docs/superpowers/specs/2026-07-19-djl-iree-engine-findings.md.
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>

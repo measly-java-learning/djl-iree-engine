@@ -52,6 +52,12 @@ val generateIreeDataTypes = tasks.register("generateIreeDataTypes") {
     val outputDir = generatedIreeSourcesDir
 
     inputs.property("ireeElementTypesPath", ireeElementTypesPath)
+    // inputs.files (not inputs.file) tolerates a missing manifest, preserving the
+    // actionable error below when native/build.sh hasn't run yet. Without this,
+    // Gradle's up-to-date check only sees the constant path *string* above and is
+    // blind to content changes -- e.g. a FetchContent re-extraction after bumping
+    // IreeRuntimePin.cmake would silently leave stale generated constants in place.
+    inputs.files(elementTypesFile)
     outputs.dir(outputDir)
 
     doLast {
