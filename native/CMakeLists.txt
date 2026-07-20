@@ -39,6 +39,10 @@ if(IREE_DJL_TSAN)
   add_link_options(-fsanitize=thread)
 endif()
 
+if(IREE_DJL_SANITIZE AND IREE_DJL_TSAN)
+  message(FATAL_ERROR "IREE_DJL_SANITIZE (ASan) and IREE_DJL_TSAN are mutually exclusive; enable at most one.")
+endif()
+
 # Link smoke test (Task 1)
 add_executable(link_smoke_test test/link_smoke_test.cpp)
 target_link_libraries(link_smoke_test PRIVATE iree-runtime-dist::runtime)

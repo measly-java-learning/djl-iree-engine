@@ -10,17 +10,21 @@ only.
 
 ## Prerequisites
 
-- An IREE build tree (default `/home/corey/workspace/iree-build`) and matching source tree
-  (default `/home/corey/workspace/iree`). Override with the `IREE_INSTALL` and
-  `IREE_SOURCE` environment variables. The linked runtime must match the compiler used to
-  produce any `.vmfb` you load — see "Version alignment" in the findings doc.
-- `iree-compile` from pip, **only** if you need to regenerate the test model:
-  `uv pip install iree-base-compiler==3.12.0rc20260717`. This exact version is required —
-  the stable `3.11.0` release emits a `.vmfb` whose ABI mismatches the local runtime build
-  and fails to load. The pip `iree-base-runtime` wheel is not usable at any version; it
-  ships no headers and no linkable library.
+The engine consumes the published `iree-runtime-dist` v3.11.0-3 artifact — a hash-pinned tarball
+of 198 static archives, fetched and verified by CMake at configure time. There is **no IREE
+source tree, no IREE build tree, and no compiler required** to build or test this engine:
+
 - JDK 17 (e.g. `/usr/lib/jvm/zulu-17-amd64`) — set `JAVA_HOME` to it.
-- CMake, Ninja, and a C++20 compiler.
+- CMake, Ninja, and a C++20 (gcc/clang) compiler.
+- Network access, to fetch the pinned `iree-runtime-dist` tarball (SHA256-verified against
+  `native/cmake/IreeRuntimePin.cmake`; a tampered hash fails hard at configure time).
+
+`iree-compile` from pip is needed **only** if you want to regenerate the test fixture
+(`add.vmfb`), which is otherwise committed:
+`uv pip install iree-base-compiler==3.11.0`. This is the version paired with the dist's linked
+runtime (`e4a3b040`, stable tag `v3.11.0`) per its `manifest.json` — no more nightly-chasing. The
+pip `iree-base-runtime` wheel is still not usable at any version; it ships no headers and no
+linkable library, which is exactly why the dist artifact exists.
 
 ## Build and test
 
@@ -36,22 +40,34 @@ through a real DJL `Predictor` and checks the output `[11, 22, 33, 44]`.
 ## Native QA
 
 ```bash
-./native/build/iree_runtime_test                      # Catch2 units (8 cases)
+./native/build/iree_runtime_test                      # Catch2 units (9 cases)
 
-# Sanitizer gate (this is the go/no-go checkpoint):
+# ASan/LSan sanitizer gate (this is the go/no-go checkpoint):
 rm -rf native/build && ./native/build.sh -DIREE_DJL_SANITIZE=ON
 ASAN_OPTIONS=detect_leaks=1 ./native/build/iree_leak_harness "" 200
 ASAN_OPTIONS=detect_leaks=1 ./native/build/iree_leak_harness "" 400
+
+# TSan gate (measured, not guaranteed by construction — see below):
+rm -rf native/build && ./native/build.sh -DIREE_DJL_TSAN=ON
+./native/build/iree_leak_harness "" 100
 ```
 
-**Operational note:** the sanitizer build stages an ASan-instrumented `libiree_djl.so` into
-the JVM resources directory. That instrumented `.so` breaks `./gradlew test` with "ASan
-runtime does not come first," because the JVM doesn't preload ASan. After running the
-sanitizer gate, **rebuild the plain `.so`** with `./native/build.sh` (no
-`-DIREE_DJL_SANITIZE`) before running the JVM suite again.
+`IREE_DJL_SANITIZE` (ASan) and `IREE_DJL_TSAN` are mutually exclusive; enabling both fails
+fast at CMake configure time with a clear error rather than a cryptic compiler failure.
 
-There is no TSan leg: the `local-sync` HAL driver runs all work inline on the calling
-thread, so there are no IREE-internal threads to inspect.
+**Operational note:** either sanitizer build stages an instrumented `libiree_djl.so` into
+the JVM resources directory. That instrumented `.so` breaks `./gradlew test` (e.g. "ASan
+runtime does not come first"), because the JVM doesn't preload sanitizer runtimes. After
+running a sanitizer gate, **rebuild the plain `.so`** with `./native/build.sh` (no
+`-DIREE_DJL_SANITIZE` / `-DIREE_DJL_TSAN`) before running the JVM suite again.
+
+The `iree-runtime-dist` artifact ships `IREE_ENABLE_THREADING=ON` with the `local-task` HAL
+driver compiled in, so a TSan-clean result is no longer guaranteed by construction the way it
+was when `local-sync` was the only driver linked in. It is, however, empirically true: with the
+facade selecting `local-sync` at runtime, TSan ran clean over 100 cycles, `strace -f` recorded
+**zero** `clone`/`clone3` syscalls across the whole run, and `/proc/<pid>/status` sampled
+mid-invoke read `Threads: 1`. Treat this as a measured property to re-verify if the runtime
+driver selection ever changes, not as an invariant of the linked binary.
 
 ## Threading
 
@@ -63,3 +79,9 @@ thread, so there are no IREE-internal threads to inspect.
 - Design: `docs/superpowers/specs/2026-07-19-djl-iree-engine-skeleton-design.md`
 - Findings (the go/no-go writeup): `docs/superpowers/specs/2026-07-19-djl-iree-engine-findings.md`
 - Plan: `docs/superpowers/plans/2026-07-19-djl-iree-engine-skeleton.md`
+- Wishlist for the dist project, with delivered/open status:
+  `docs/superpowers/specs/iree-runtime-dist-wishlist.md`
+- `iree-runtime-dist` handover (what the artifact actually ships):
+  `docs/2026-07-20-djl-iree-engine-handover.md`
+- Usability report on the dist artifact, with filed issues and verdict:
+  `docs/2026-07-20-iree-runtime-dist-usability-report.md`

@@ -45,9 +45,21 @@ proceeding to a MobileNet v2 parity check as the next milestone, per the plan be
   references were confirmed present in `libiree_djl_core.a`, and LSan's arming was
   confirmed via a deliberate-leak check (a planted leak was caught, ruling out a
   silently-disabled leak detector).
-- No TSan leg was run, by design: the `local-sync` HAL driver executes all work inline on
-  the calling thread, so there are no IREE-internal threads for TSan to have a surface
-  against.
+- **TSan (added 2026-07-20, Task 4 — corrected from the original structural claim below):**
+  the shipped `iree-runtime-dist` artifact compiles in `IREE_ENABLE_THREADING=ON` with
+  `local-task` present, so the "no TSan leg because `local-sync` has no internal threads"
+  claim below is no longer true *by construction* — the binary that results from linking
+  this dist has threading support linked in either way. The empirical question is instead
+  whether *selecting* `local-sync` at runtime keeps the process single-threaded despite
+  that, and it does: TSan ran clean over 100 cycles with the facade selecting `local-sync`,
+  `strace -f` across the whole run recorded **zero** `clone`/`clone3` syscalls, and
+  `/proc/<pid>/status` sampled mid-invoke read `Threads: 1`. This is a measured property of
+  the running process, not a guarantee the build gives you for free — state it as such, not
+  as "no internal threads" by design. (Historical claim, superseded by the above: no TSan
+  leg was run, by design, because the `local-sync` HAL driver executes all work inline on
+  the calling thread, so there were no IREE-internal threads for TSan to have a surface
+  against — this held for the original from-source build where `local-task` was not even
+  compiled in, and no longer describes why the property holds now that it is.)
 
 ## Effort assessment
 
@@ -88,19 +100,31 @@ proceeding to a MobileNet v2 parity check as the next milestone, per the plan be
   check: the element-type tag always comes from `IreeDataTypes`, itself derived from each
   `NDArray`'s `DataType`, so it is correct by construction; IREE's own check simply confirms
   that construction is honored.
-- Version alignment is an environment lesson worth recording, not a design flaw: the
-  `.vmfb` compiler and the linked runtime must agree on ABI. The linked runtime here is the
+- **Version alignment (updated 2026-07-20): the saga is dissolved, not solved.** The
+  paragraph below records the original problem and why the pairing contract matters, but it
+  is no longer the live state of this project. The engine now consumes the published
+  `iree-runtime-dist` v3.11.0-3 artifact, which anchors on **stable `v3.11.0`** — runtime
+  commit `e4a3b040` paired with compiler `3.11.0` — and never `main`/nightly. The dist's
+  `manifest.json` records the pairing explicitly (`runtime_commit`, `iree_compile_version`,
+  `iree_tag`, `vm_bytecode_version`), so alignment is asserted at configure/load time rather
+  than discovered by trial and error. Consuming the dist also means the engine needs **no
+  local IREE source tree and no local IREE build tree** at all — `IREE_INSTALL`/`IREE_SOURCE`
+  are gone; see the README's rewritten prerequisites and
+  `docs/2026-07-20-iree-runtime-dist-usability-report.md` for the full verdict.
+
+  Historical record, kept because it explains *why* the pairing contract matters: version
+  alignment was an environment lesson worth recording, not a design flaw. The `.vmfb`
+  compiler and the linked runtime must agree on ABI. The linked runtime at the time was the
   local build at `/home/corey/workspace/iree-build` (source commit `a869dc3`, version
-  `3.12.0.dev`). The stable pip release, `iree-base-compiler==3.11.0`, emits a `.vmfb`
-  whose `hal.command_buffer.dispatch` import signature mismatches that runtime and fails
-  to load. The fix was to compile with the matching pip nightly,
+  `3.12.0.dev`). The stable pip release, `iree-base-compiler==3.11.0`, emitted a `.vmfb`
+  whose `hal.command_buffer.dispatch` import signature mismatched that runtime and failed
+  to load. The fix at the time was to compile with the matching pip nightly,
   `iree-base-compiler==3.12.0rc20260717`, and verify the resulting fixture against the
   runtime's own `iree-run-module` before trusting it in the JVM suite. Separately, the pip
   `iree-base-runtime` wheel is not linkable at any version — no headers, no static libs —
-  confirming the design doc's decision to link against the local build tree instead. This
-  leaves a deferred item: for an eventual shipping build, align on a single stable release
-  (compiler wheel + from-source runtime built at the same tag) rather than depending on an
-  ephemeral nightly.
+  confirming the design doc's decision (at the time) to link against a local build tree.
+  This nightly-chasing narrative is exactly what a stable, tagged pairing contract
+  supersedes.
 
 ## Runtime API choice (high-level vs low-level) and when to revisit
 
@@ -191,8 +215,10 @@ Carried forward from the design doc's deferred list, plus items surfaced during 
 - Third-party license bundling
 - The `et_logging` → slf4j PAL bridge
 - The `Translator` support library (`translate/`)
-- Swapping the stub `IreeRuntimePin.cmake` for a real `iree-runtime-dist` pin — align on a
-  stable release (compiler + from-source runtime) at that point
+- ~~Swapping the stub `IreeRuntimePin.cmake` for a real `iree-runtime-dist` pin — align on a
+  stable release (compiler + from-source runtime) at that point~~ — **done, 2026-07-20**: the
+  engine now consumes `iree-runtime-dist` v3.11.0-3 and needs no local IREE tree; see the
+  version-alignment update above and `docs/2026-07-20-iree-runtime-dist-usability-report.md`.
 - Content-addressed native-library extraction cache in `LibUtils`
 - Timing/benchmark harness and the JMH example module
 - Correcting `IreeNDArray` close/use-after-close hygiene toward the ExecuTorch reference

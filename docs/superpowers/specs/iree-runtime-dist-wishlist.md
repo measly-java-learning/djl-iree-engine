@@ -1,7 +1,13 @@
 # `iree-runtime-dist` — What the DJL IREE Engine Wants From It
 
 **Date:** 2026-07-19
-**Status:** Input / wishlist for a hypothetical upstream project (not yet started)
+**Status:** Input / wishlist — originally written against a hypothetical upstream project; that
+project has since shipped as `iree-runtime-dist` v3.11.0-3 and this engine now consumes it. Items
+below are annotated **delivered in v3.11.0-3** where satisfied, and three items (#2, #8, #9) carry
+2026-07-20 corrections where the published artifact's actual shape differed from what this
+document assumed. See `docs/2026-07-20-djl-iree-engine-handover.md` (from the dist project) and
+`docs/2026-07-20-iree-runtime-dist-usability-report.md` (our reply, with filed issues) for the
+verified facts.
 **Audience:** whoever builds `iree-runtime-dist` — the upstream that builds and publishes the
 IREE runtime for `djl-iree-engine` to consume, analogous to
 [`executorch-runtime-dist`](https://github.com/measly-java-learning/executorch-runtime-dist)
@@ -27,12 +33,32 @@ The four items where time was demonstrably lost — **#2, #3, #4, #6** — are t
 ## Tier 1 — eliminates the biggest fragility
 
 ### 1. The CMake pin (FetchContent) — already understood to be on the list
+
+**Delivered in v3.11.0-3.** `IreeRuntimePin.cmake` ships as a release asset and drops straight
+into the stub seam. The SHA256 gate is real: a tampered hash fails hard at configure time (we
+tested this). One caveat filed as an issue: the pin is coordinates-only (URL + SHA256 variables),
+not a drop-in `include()`-and-go file — see filed issue #2 in the usability report.
+
 The `EtRuntimePin.cmake` analogue: a hash-pinned, build-attested tarball, with the SHA256 as the
 supply-chain review gate. The skeleton ships a stub seam for exactly this:
 `native/cmake/IreeRuntimePin.cmake`, which the dist release asset replaces wholesale.
-`native/cmake/ResolveIree.cmake` is the temporary hand-rolled stand-in.
+`native/cmake/ResolveIree.cmake` is the temporary hand-rolled stand-in, now deleted.
 
 ### 2. A real install tree shipping `IREERuntimeConfig.cmake`
+
+**Delivered in v3.11.0-3.** `find_package(IreeRuntimeDist REQUIRED)` +
+`iree-runtime-dist::runtime` is the entire link surface; the umbrella target resolves with zero
+hand-listed archives. One naming caveat filed as an issue: the pin's per-variant/per-platform
+variable naming (`IREE_RUNTIME_URL_default_linux-x86_64`) won't scale cleanly as more
+variants/platforms ship — see filed issue #3.
+
+**Correction (2026-07-20): RPATH/`patchelf` scrubbing was never the dist's job, and is not listed
+here as delivered.** This item originally framed RPATH/RUNPATH hygiene as something the dist
+needed to scrub from "the shipped `.so`." **The dist ships 0 `.so` files and 198 `.a` files** —
+there is no shared object in the artifact for RPATH to leak from. The only shared object in the
+whole system is **our own JNI shim**, so RPATH/RUNPATH hygiene on it is entirely ours to own, not
+the dist's. The CMake-config relocatability point below is unaffected by this and was delivered.
+
 **The single biggest item after the pin.** The local build was never `ninja install`ed, so there
 was no CMake package and `ResolveIree.cmake` had to reconstruct the entire link surface by hand —
 and got it wrong on the first attempt. What a `find_package(IREERuntime)` config would eliminate:
@@ -65,10 +91,20 @@ mechanics; the IREE-specific leak surfaces to scrub or verify are:
   `DW_AT_comp_dir`. That dump path already looked relative, so IREE likely handles this — but
   confirm the dist build preserves it (`-ffile-prefix-map=`/`-fdebug-prefix-map=`) rather than
   baking `/home/.../iree`.
-- **RPATH/RUNPATH** on any shipped `.so` (`patchelf`/`chrpath` to scrub), and don't ship
-  build-tree metadata (`CMakeCache.txt`, `compile_commands.json`) in the tarball.
+- Don't ship build-tree metadata (`CMakeCache.txt`, `compile_commands.json`) in the tarball.
+  (**Not** RPATH/RUNPATH scrubbing — the dist ships no `.so` at all, so there is nothing of
+  that kind to scrub; see the correction above. RPATH hygiene on our own JNI `.so` is ours.)
 
 ### 3. A compiler↔runtime compatibility manifest, and the matching `iree-compile`
+
+**Delivered in v3.11.0-3** — as a manifest, not a shipped compiler (that part of the ask was
+never going to happen; `IREE_BUILD_COMPILER=OFF` always). `manifest.json` records
+`iree_compile_version`, `runtime_commit`, `iree_tag`, and `vm_bytecode_version`, and the pairing
+contract failed **fast and legibly** when our stale test fixture didn't match this dist's runtime
+(`hal version mismatch; have 6 but require 7`) rather than a cryptic signature error. See
+`docs/superpowers/specs/2026-07-19-djl-iree-engine-findings.md` for how this dissolves the
+version-alignment saga described below.
+
 **The version-alignment saga, prevented at the source.** The pip *stable* `iree-compile` 3.11.0
 emitted a `.vmfb` whose `hal.command_buffer.dispatch` VM import signature
 (`0rriiiiICiDCiirIID_v`) mismatched the linked runtime built from source commit `a869dc3`
@@ -93,6 +129,12 @@ yields a linkable runtime.
 ## Tier 2 — generated constants and smoke artifacts
 
 ### 4. Element-type (dtype) constants, generated from the source
+
+**Delivered in v3.11.0-3.** `element_types.json` (24 entries) is emitted by a program compiled
+against the shipped headers, and `IreeDataTypes.java` is now codegen'd from it at build time.
+Every generated value — including the corrected `FLOAT_32 = 0x21000020` and
+`SINT_32 = 0x11000020` below — matched our independently header-derived values exactly.
+
 Concrete bug paid here: the plan hard-coded `FLOAT_32 = 0x00000120`; the real value is
 `0x21000020` (from `IREE_HAL_ELEMENT_TYPE_VALUE(numerical_type, bit_count) = (num<<24)|bits`,
 `FLOAT_IEEE=0x21`, `SINT=0x11`, so `SINT_32=0x11000020`). It silently "worked" through Tasks 3–8
@@ -103,12 +145,23 @@ JSON, or codegen `IreeDataTypes.java` directly, and ship it in the tarball. Down
 options are hard-coding (got it wrong) or parsing a C header (fragile).
 
 ### 5. Status-code enum, same mechanism
+
+**Delivered in v3.11.0-3.** `status_codes.json` (19 entries) ships alongside the element types.
+Mapping it to typed Java exceptions is a deliberate deferral, not a gap in the dist — see filed
+issue #6 for a documentation gap in how the JSON schema is discovered/scoped.
+
 `iree_status_code_t` values (OK, INVALID_ARGUMENT, NOT_FOUND, …). The engine currently throws a
 `RuntimeException` carrying only the message string. If typed Java exceptions are ever wanted
 (e.g. distinguishing a shape/type rejection from a missing entry point), these enum values are
 another generated manifest rather than a hand-transcription.
 
 ### 6. A canonical `add.vmfb` smoke artifact, compiled with the matching compiler
+
+**Delivered in v3.11.0-3.** `share/iree-runtime-dist/add.vmfb`, exposed as
+`IREE_RUNTIME_DIST_ADD_VMFB`, loads and runs with no compiler installed anywhere in the build.
+One correction filed as an issue: the handover's §5 describes it as taking `int32` inputs; it is
+`f32` (independently confirmed) — see filed issue #5.
+
 ExecuTorch's dist shipped `add.pte` to assert (post-link) that the XNNPACK backend survived. If
 the IREE dist ships a guaranteed-compatible `add.vmfb`, a consumer can smoke-test "the runtime
 loads and runs a known module" **without needing a compiler at all** — which would have
@@ -179,36 +232,78 @@ attest them in a manifest (PIC on; HAL drivers + executable loaders enabled; Rel
 exactly what the variant matrix selects (see "Runtime variants" above).
 
 ### 8. glibc floor via the right container
-Build inside a `manylinux_2_28`-equivalent so the shipped `.so` holds a known glibc floor. Prefer
-building *against* an old glibc (the manylinux approach `executorch-runtime-dist` uses) over
-building new and repairing after — a dist controls its own container, so symbol-version repair
-(polyfills, `patchelf`) is a fragile fallback, not the strategy.
 
-Two IREE-specific deltas make this easier than for ExecuTorch:
+**Correction (2026-07-20): `glibc_build` is not a floor, and this item's framing was wrong.**
+`manifest.json` records `"glibc_build": "2.28"`, but that is the glibc of the **container the
+archives were compiled against**, not a compatibility floor the dist can hand us. Static
+archives carry *unversioned* undefined libc symbols; glibc symbol-version resolution happens at
+**our** final link, when the JNI `.so` is produced — not inside a `.a`. Scanning the shipped
+archives for `GLIBC_x.y` strings is structurally incapable of yielding a floor. **Our shim's
+glibc floor is set by our own link container**, not by the dist's build container. Restated:
+build inside a `manylinux_2_28`-equivalent for *our own JNI shim link*, not as something to
+request of the dist.
+
+The two observations below survive intact — they describe constraints on our link, not the
+dist's:
 
 - **The floor is unconstrained by any torch wheel.** ExecuTorch's 2.28 floor was *forced* by
   `torch==2.12.0`'s wheel. The IREE runtime is a standalone C library with no torch dependency, so
-  the shipped `.so`'s glibc floor is purely a choice of build-container glibc — go as old as you like.
-- **The C++ runtime floor comes from the JNI shim, not IREE.** IREE's runtime is C; the only
-  `libstdc++` dependency in the shipped `.so` is the engine's own C++ shim, so libstdc++ versioning
-  is a shim-toolchain choice and IREE adds nothing to it.
+  our shim's glibc floor is purely a choice of our own build-container glibc — go as old as we like.
+- **Clang is independent of the container's glibc.** The "clang CI container has too-new glibc"
+  wall is a non-issue: install a recent clang *into* an old-glibc base (exactly what manylinux
+  does) rather than starting from a stock clang image. This is our build-environment concern, not
+  the dist's — deferred in the skeleton, and now squarely our own territory rather than something
+  to ask upstream for.
 
-The "clang CI container has too-new glibc" wall is a non-issue here: clang is independent of the
-container's glibc — install a recent clang *into* an old-glibc base (exactly what manylinux does)
-rather than starting from a stock clang image. A build-environment concern, deferred in the
-skeleton, squarely dist territory.
+**Correction to the §8 libstdc++ claim:** the conclusion still holds, but the premise it rested on
+was wrong. Scanning all 198 shipped archives finds 385 undefined C++ symbols (`std::`, `__cxa_`,
+`operator new`) — so "IREE's runtime is C" is not quite true of the artifact as a whole. Those
+symbols are confined entirely to `libbenchmark.a` and `libiree_testing_benchmark.a`, and **neither
+is in the `iree_runtime_unified` umbrella target's link closure**. Restated: *link the umbrella
+target and your libstdc++ story is yours alone* — the conclusion (libstdc++ versioning is a
+shim-toolchain choice, IREE adds nothing to our final link) holds, but only because we link the
+umbrella target and not because IREE's code is uniformly C.
+
 The available version of `clang`/`lld` for this container is 21.1.8 as determined by inspection.
 Will need to identify additional required packages.  For Python, use CPython 3.12 as that's the
 newest non-threaded runtime documented for the available Python packages. (3.10 and 3.11 are both available but why risk it?)
 
 ### 9. Third-party license notices
-IREE vendors LLVM, flatcc, and more. Collecting `LICENSE`/notice files is trivial from the source
+
+**Correction (2026-07-20): "IREE vendors LLVM, flatcc, and more" is wrong for this artifact.**
+`THIRD-PARTY-NOTICES/` contains exactly three entries — `flatcc/`, `libbacktrace/`, `printf/` —
+and **no LLVM**, because `IREE_BUILD_COMPILER=OFF` means no LLVM code is present in the artifact
+at all (measured: zero LLVM/MLIR symbols across all 198 archives). Copy the directory as shipped
+into the classifier JAR's `META-INF/licenses/`; do not derive the notice list from IREE's
+submodule list, which is a much larger set that includes code never linked into this artifact.
+
+Collecting `LICENSE`/notice files is trivial from the source
 tree and tedious downstream; ExecuTorch's dist bundles `THIRD-PARTY-NOTICES` into the classifier
-JAR (`META-INF/licenses/...`). The IREE dist should do the same.
+JAR (`META-INF/licenses/...`). The IREE dist does the same, and — unlike ExecuTorch's LLVM-vendoring
+case — the notice set here is small because the compiler (and its LLVM dependency) is out of
+scope for the runtime artifact entirely.
 
 ### 10. Per-platform artifacts
 `linux-x86_64` now; `windows-x86_64` later (with the MSVC/CRT considerations the skeleton
-deferred). Feeds the per-platform classifier-JAR packaging the engine also deferred.
+deferred). Feeds the per-platform classifier-JAR packaging the engine also deferred. **Still
+open** as of v3.11.0-3 — only `linux-x86_64` ships.
+
+---
+
+## Status as of v3.11.0-3
+
+**Delivered:** #1 (pin), #2 (config/manifest, with the RPATH correction above), #3
+(compatibility manifest, with `add.vmfb` as #6), #4 (element types), #5 (status codes), #6
+(`add.vmfb`).
+
+**Still open:** the `devtools` variant (Tracy tracing + allocation statistics — blocks
+latency/footprint observability work), the `gpu` variant, `windows-x86_64` (#10), and a
+`minimal` TSan-free-by-construction variant. On that last point: Task 4's empirical result (see
+the findings doc) shows a `minimal` variant is not actually needed for the TSan concern that
+motivated it — `local-sync`, selected at runtime from the single shipped `default` variant, is
+measured thread-free under TSan even though `local-task` is compiled in. See
+`docs/2026-07-20-iree-runtime-dist-usability-report.md` for the full verdict and filed-issue
+index.
 
 ---
 
