@@ -100,14 +100,66 @@ has the matching compiler, only the dist can ship an artifact guaranteed to load
 
 ---
 
+## Runtime variants — define the matrix up front
+
+Start here, not later: the variant matrix is far cheaper to design in than to bolt on, because
+it dictates how the build is parameterized and what gets published per release. IREE makes this
+cleaner than ExecuTorch — nearly everything capability-relevant in the *runtime* is gated behind
+two build-time axes, **HAL drivers** (what can execute) and **executable loaders** (what compiled
+code can be loaded), plus a **tracing/stats** axis that is the direct `devtools` analogue.
+
+What each optional piece actually unlocks for *this* engine, and how much of the feature the flag
+alone delivers:
+
+- **`local-task` HAL driver → CPU multithreading (intra-op parallelism).** The clearest variant
+  axis. The skeleton deliberately used `local-sync` (inline, single-threaded) so there are **no
+  IREE-internal threads** — that is why the skeleton has no TSan leg at all. `local-task` adds a
+  worker pool for throughput on multicore CPUs. Flag alone unlocks it; caveat: it reintroduces
+  internal threads, so a `local-task` variant is also where TSan coverage must come back.
+- **Tracy tracing → per-dispatch latency / execution timelines.** Build-gated
+  (`IREE_ENABLE_RUNTIME_TRACING` + Tracy); the pip wheel already ships a separate `_runtime_tracy`.
+  This is what the design's §10 latency reality-check and the deferred benchmark milestone want.
+  Overhead ⇒ separate variant. Flag alone unlocks it (just don't strip the Tracy symbols).
+- **Allocation statistics → device-allocator counts / peak bytes.** Turns "ASan looked flat" into
+  a reported peak + zero-growth assertion across N invocations — the observability half of
+  `devtools`. (Confirm the exact IREE CMake flag spelling.)
+- **GPU drivers (CUDA / Vulkan / HIP / Metal) → GPU inference.** The biggest capability, and
+  impossible without the driver compiled in — but the flag is only the *prerequisite*: it also
+  needs the `.vmfb` compiled for that backend (compiler-side, ties to the compatibility manifest,
+  #3), the matching loader, and it **breaks the skeleton's CPU-coherent-memory assumption** (the
+  copy-out invalidate-range footnote stops being hypothetical; the WRAPPED/STAGED import story
+  changes because device memory isn't host-visible). A milestone, not a flag flip — name it as a
+  separate axis so nobody assumes "ship the CUDA driver" is sufficient.
+- **Executable loaders (`embedded-elf` vs `system-library`) → compatibility, not a feature.** Must
+  match how the `.vmfb` was compiled for `llvm-cpu`; shipping both is flexibility, omitting the
+  needed one blocks *loading*. `vmvx-module` (reference interpreter) is a niche portability
+  fallback.
+- **Logging / slf4j PAL bridge → the ExecuTorch `logging` analogue.** Maps to the engine's
+  deferred slf4j bridge. IREE's runtime logging is lighter than ExecuTorch's `ET_LOG` PAL (it
+  leans on `iree_status` messages), so confirm whether forwarding diagnostics needs a build flag
+  or is always available.
+
+### Proposed variant matrix
+
+| Variant | Drivers / loaders | Tracing / stats | Unlocks | Engine caveat |
+|---|---|---|---|---|
+| `minimal` (bare) | `local-sync` + `embedded-elf` (+ `system-library`) | none | smallest, single-threaded; the skeleton's target | none — TSan-free by construction |
+| `default` / `perf` | + `local-task` | none | CPU intra-op parallelism / throughput | reintroduces internal threads ⇒ needs TSan coverage |
+| `devtools` | as `default` | Tracy + allocation stats | per-dispatch latency, footprint assertions | tracing overhead ⇒ keep separate from `perf` |
+| `gpu` (separate axis, later) | + a GPU driver + matching loader | optional | GPU inference | needs GPU-target compiler + non-CPU marshaling work |
+
+For this CPU engine, **`local-task` (the `perf` variant) and the Tracy/stats `devtools` variant
+are the two that deliver real features for little more than the right build flag** — those are the
+ones a dist should offer first. GPU is the big capability but a milestone, not a variant flip.
+
 ## Tier 3 — distribution hygiene (dist's job, far easier at the source)
 
 ### 7. Build-config attestation + trimmed variants
 The skeleton verified PIC by reading relocations with `readelf` and confirmed
 `local-sync`/`embedded-elf` from `CMakeCache.txt`. Upstream these are just the build config —
 attest them in a manifest (PIC on; HAL drivers + executable loaders enabled; Release;
-`BUILD_SHARED_LIBS=OFF`; glibc floor). Like ExecuTorch's `bare`/`logging`/`devtools`, publish a
-lean CPU-inference variant (essentially `local-sync` + `embedded-elf`) distinct from a fuller one.
+`BUILD_SHARED_LIBS=OFF`; glibc floor) — per variant, since the driver/loader/tracing set is
+exactly what the variant matrix selects (see "Runtime variants" above).
 
 ### 8. glibc floor via the right container
 Build inside a `manylinux_2_28`-equivalent so the shipped `.so` holds a known glibc floor
