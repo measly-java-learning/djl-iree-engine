@@ -9,8 +9,6 @@ build_type="${BUILD_TYPE:-RelWithDebInfo}"
 
 cmake -S "${here}" -B "${build_dir}" -G Ninja \
   -DCMAKE_BUILD_TYPE="${build_type}" \
-  ${IREE_INSTALL:+-DIREE_INSTALL="${IREE_INSTALL}"} \
-  ${IREE_SOURCE:+-DIREE_SOURCE="${IREE_SOURCE}"} \
   "$@"
 
 cmake --build "${build_dir}"

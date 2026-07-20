@@ -8,7 +8,23 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_LIST_DIR}/cmake")
-include(ResolveIree)
+
+# IreeRuntimePin.cmake (published by iree-runtime-dist) only sets the
+# hash-pinned URL/SHA256 variables for each variant/platform -- it does not
+# itself fetch anything or call find_package(). We do that here: fetch the
+# tarball via FetchContent (which re-verifies the SHA-256 on every build),
+# then point find_package() at the extracted prefix.
+include(IreeRuntimePin)
+
+include(FetchContent)
+FetchContent_Declare(iree_runtime_dist
+    URL      "${IREE_RUNTIME_URL_default_linux-x86_64}"
+    URL_HASH SHA256=${IREE_RUNTIME_SHA256_default_linux-x86_64}
+)
+FetchContent_MakeAvailable(iree_runtime_dist)
+
+list(APPEND CMAKE_PREFIX_PATH "${iree_runtime_dist_SOURCE_DIR}")
+find_package(IreeRuntimeDist REQUIRED)
 
 option(IREE_DJL_SANITIZE "Build with ASan/LSan" OFF)
 if(IREE_DJL_SANITIZE)
@@ -18,12 +34,12 @@ endif()
 
 # Link smoke test (Task 1)
 add_executable(link_smoke_test test/link_smoke_test.cpp)
-target_link_libraries(link_smoke_test PRIVATE iree::runtime)
+target_link_libraries(link_smoke_test PRIVATE iree-runtime-dist::runtime)
 
 # RAII facade over the IREE C API (Task 3)
 add_library(iree_djl_core STATIC core/iree_runtime.cpp)
 target_include_directories(iree_djl_core PUBLIC "${CMAKE_CURRENT_LIST_DIR}")
-target_link_libraries(iree_djl_core PUBLIC iree::runtime)
+target_link_libraries(iree_djl_core PUBLIC iree-runtime-dist::runtime)
 
 include(FetchContent)
 FetchContent_Declare(Catch2
