@@ -14,7 +14,11 @@
 
 The user's stated reason for migrating now: *"if there are usability issues with the runtime dist I'd rather know sooner so I can take down a genuinely not helpful artifact."*
 
-**Treat every point of friction as a finding, not just an obstacle.** In each task, record in the task report: anything that was unclear, undocumented, required guessing, or contradicted the handover. Task 5 consolidates these into a report for the dist project. A migration that "worked but was confusing" is a finding.
+**Treat every point of friction as a finding, not just an obstacle.** In each task, record in the task report: anything that was unclear, undocumented, required guessing, or contradicted the handover. A migration that "worked but was confusing" is a finding.
+
+**File each finding as a GitHub issue at the moment of discovery** — `gh issue create --repo measly-java-learning/iree-runtime-dist` — rather than batching them. Rationale (user's): filing immediately preserves the full context of the finding instead of forcing a lossy reconstruction later. Write a real, well-formed issue: expected vs actual, the exact code/commands involved, impact, and a suggested fix. Note verified-good behaviour too — it is as useful to the maintainer as the complaints. Task 5's report then becomes an *index* of filed issues plus the overall verdict, not the primary vehicle.
+
+Issues filed so far: [#2](https://github.com/measly-java-learning/iree-runtime-dist/issues/2) (pin is coordinates-only vs. docs), [#3](https://github.com/measly-java-learning/iree-runtime-dist/issues/3) (pin variable naming).
 
 ## Global Constraints
 
@@ -374,14 +378,16 @@ Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 
 The engine no longer needs an IREE source tree, an IREE build tree, or a compiler. Prerequisites shrink to: JDK 17 (`JAVA_HOME`), cmake/ninja/gcc, and network access for the pinned tarball. `iree-base-compiler==3.11.0` is needed **only** to regenerate the test fixture. Remove all `IREE_INSTALL`/`IREE_SOURCE` instructions. Add the TSan command next to the ASan gate, and keep the plain-rebuild note.
 
-- [ ] **Step 4: Write the usability report for the dist project**
+- [ ] **Step 4: Write the usability summary (an index of already-filed issues)**
+
+Individual findings were filed as GitHub issues as they were discovered (see the plan's secondary-goal section). This step writes the *overall* verdict and answers the dist project's open questions — it does **not** re-litigate each finding.
 
 Create `docs/2026-07-20-iree-runtime-dist-usability-report.md`, addressed to `measly-java-learning/iree-runtime-dist`. Structure:
 
-- **Verdict** — did the artifact deliver? Would you keep or take it down?
+- **Verdict** — did the artifact deliver? Keep it, or is it genuinely not helpful? (This is the question that motivated migrating now.)
+- **Index of filed issues** — number, title, one-line severity/impact. Confirm each was filed at discovery time with full context.
 - **What worked without friction** (be specific — this is as useful as the complaints).
-- **Friction encountered**, each with: what was expected, what happened, what would have prevented it.
-- **Answers to their two open questions:**
+- **Answers to their two open questions** — file these as issues/comments too if they warrant tracking:
   1. §3.1 symbol visibility — we link the archives into a JNI `.so` with `-Wl,--exclude-libs,ALL`; report whether that suffices and any observed collision.
   2. §3.3 TSan with runtime `local-sync` selection — report Task 4's empirical result.
 - **Corrections to the handover**, if any of its claims did not hold.
