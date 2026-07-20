@@ -65,20 +65,58 @@ val generateIreeDataTypes = tasks.register("generateIreeDataTypes") {
         }
 
         // Manifest is a flat JSON object of NAME -> decimal int, e.g. {"FLOAT_32": 553648160, ...}.
-        // No JSON library is on the build classpath, and the shape is simple enough that a small
-        // regex scan is clearer than adding a dependency just to parse this one file.
-        val json = elementTypesFile.readText()
-        val entryPattern = Regex("\"([A-Za-z0-9_]+)\"\\s*:\\s*(-?\\d+)")
+        // No JSON library dependency is added: Gradle already bundles Groovy, so
+        // groovy.json.JsonSlurper is on the build classpath for free. Parsing structurally
+        // (rather than regex-scanning the raw text) means a nested envelope or a truncated
+        // file is *detected*, not silently tolerated.
+        val minExpectedEntryCount = 24 // per handover doc §4; upstream may legitimately add more later
+
+        val parsed = try {
+            groovy.json.JsonSlurper().parse(elementTypesFile)
+        } catch (e: Exception) {
+            throw GradleException(
+                "iree-runtime-dist element_types.json ($elementTypesFile) is not valid JSON: ${e.message}",
+                e
+            )
+        }
+
+        if (parsed !is Map<*, *>) {
+            throw GradleException(
+                "iree-runtime-dist element_types.json ($elementTypesFile) has an unexpected shape: " +
+                    "expected a flat JSON object of NAME -> integer, got a ${parsed?.javaClass?.name ?: "null"}. " +
+                    "The manifest's schema appears to have changed; do not trust the generated constants " +
+                    "until this is reconciled."
+            )
+        }
+
         val entries = LinkedHashMap<String, Long>()
-        for (match in entryPattern.findAll(json)) {
-            entries[match.groupValues[1]] = match.groupValues[2].toLong()
+        for ((rawKey, rawValue) in parsed) {
+            if (rawKey !is String || rawValue !is Number) {
+                throw GradleException(
+                    "iree-runtime-dist element_types.json ($elementTypesFile) has an unexpected entry: " +
+                        "key=$rawKey (${rawKey?.javaClass?.name}), value=$rawValue (${rawValue?.javaClass?.name}). " +
+                        "Expected every entry to be a String name mapped to a numeric value (a nested " +
+                        "envelope or non-numeric value means the manifest's schema changed)."
+                )
+            }
+            entries[rawKey] = rawValue.toLong()
+        }
+
+        if (entries.size < minExpectedEntryCount) {
+            throw GradleException(
+                "iree-runtime-dist element_types.json ($elementTypesFile) has only ${entries.size} entries, " +
+                    "expected at least $minExpectedEntryCount per the handover doc (§4). Fewer entries than " +
+                    "the known-good manifest means the file is truncated or corrupted; refusing to generate " +
+                    "IreeDataTypes from it until this is reconciled. (More than $minExpectedEntryCount is fine " +
+                    "-- that's a legitimate upstream addition.)"
+            )
         }
 
         fun require(name: String): Long =
             entries[name]
                 ?: throw GradleException(
                     "iree-runtime-dist element_types.json ($elementTypesFile) has no entry named " +
-                        "\"$name\". Expected 24 entries per the handover doc; found ${entries.size}."
+                        "\"$name\". Found ${entries.size} entries: ${entries.keys}."
                 )
 
         fun requireInt(name: String): Int {
