@@ -51,6 +51,23 @@ and got it wrong on the first attempt. What a `find_package(IREERuntime)` config
 All of the above is guesswork a proper install/config makes disappear. This is where the
 `IREE_INSTALL`-points-at-a-build-tree escape hatch is at its most fragile.
 
+**The shipped config and install tree must be relocatable** — no absolute build-system paths
+baked into published assets. (This is the "relocatability" concern proper: absolute-path leakage,
+unrelated to the glibc-floor sense in #8.) ET proves the pattern — `find_package(executorch)`
+resolves from a downloaded tarball — so reuse it rather than re-deriving `install(EXPORT)`
+mechanics; the IREE-specific leak surfaces to scrub or verify are:
+
+- **CMake config paths.** Generate the package config via `configure_package_config_file` /
+  `install(EXPORT)` so paths resolve `${CMAKE_CURRENT_LIST_DIR}`-relative — not the absolute
+  build-tree + source-tree include dirs `ResolveIree.cmake` had to hard-wire.
+- **Source paths in status messages and debug info.** IREE embeds `__FILE__` in status strings
+  (the version-mismatch error surfaced `iree/runtime/src/iree/vm/context.c:275`) and DWARF carries
+  `DW_AT_comp_dir`. That dump path already looked relative, so IREE likely handles this — but
+  confirm the dist build preserves it (`-ffile-prefix-map=`/`-fdebug-prefix-map=`) rather than
+  baking `/home/.../iree`.
+- **RPATH/RUNPATH** on any shipped `.so` (`patchelf`/`chrpath` to scrub), and don't ship
+  build-tree metadata (`CMakeCache.txt`, `compile_commands.json`) in the tarball.
+
 ### 3. A compiler↔runtime compatibility manifest, and the matching `iree-compile`
 **The version-alignment saga, prevented at the source.** The pip *stable* `iree-compile` 3.11.0
 emitted a `.vmfb` whose `hal.command_buffer.dispatch` VM import signature
@@ -162,9 +179,27 @@ attest them in a manifest (PIC on; HAL drivers + executable loaders enabled; Rel
 exactly what the variant matrix selects (see "Runtime variants" above).
 
 ### 8. glibc floor via the right container
-Build inside a `manylinux_2_28`-equivalent so the shipped `.so` holds a known glibc floor
-(ExecuTorch pins 2.28). A build-environment concern, deferred in the skeleton, squarely dist
-territory.
+Build inside a `manylinux_2_28`-equivalent so the shipped `.so` holds a known glibc floor. Prefer
+building *against* an old glibc (the manylinux approach `executorch-runtime-dist` uses) over
+building new and repairing after — a dist controls its own container, so symbol-version repair
+(polyfills, `patchelf`) is a fragile fallback, not the strategy.
+
+Two IREE-specific deltas make this easier than for ExecuTorch:
+
+- **The floor is unconstrained by any torch wheel.** ExecuTorch's 2.28 floor was *forced* by
+  `torch==2.12.0`'s wheel. The IREE runtime is a standalone C library with no torch dependency, so
+  the shipped `.so`'s glibc floor is purely a choice of build-container glibc — go as old as you like.
+- **The C++ runtime floor comes from the JNI shim, not IREE.** IREE's runtime is C; the only
+  `libstdc++` dependency in the shipped `.so` is the engine's own C++ shim, so libstdc++ versioning
+  is a shim-toolchain choice and IREE adds nothing to it.
+
+The "clang CI container has too-new glibc" wall is a non-issue here: clang is independent of the
+container's glibc — install a recent clang *into* an old-glibc base (exactly what manylinux does)
+rather than starting from a stock clang image. A build-environment concern, deferred in the
+skeleton, squarely dist territory.
+The available version of `clang`/`lld` for this container is 21.1.8 as determined by inspection.
+Will need to identify additional required packages.  For Python, use CPython 3.12 as that's the
+newest non-threaded runtime documented for the available Python packages. (3.10 and 3.11 are both available but why risk it?)
 
 ### 9. Third-party license notices
 IREE vendors LLVM, flatcc, and more. Collecting `LICENSE`/notice files is trivial from the source
