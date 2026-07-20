@@ -32,6 +32,13 @@ if(IREE_DJL_SANITIZE)
   add_link_options(-fsanitize=address)
 endif()
 
+# ASan and TSan are mutually exclusive -- never enable both at once.
+option(IREE_DJL_TSAN "Build with ThreadSanitizer" OFF)
+if(IREE_DJL_TSAN)
+  add_compile_options(-fsanitize=thread -fno-omit-frame-pointer -g)
+  add_link_options(-fsanitize=thread)
+endif()
+
 # Link smoke test (Task 1)
 add_executable(link_smoke_test test/link_smoke_test.cpp)
 target_link_libraries(link_smoke_test PRIVATE iree-runtime-dist::runtime)
