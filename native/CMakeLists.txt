@@ -50,7 +50,8 @@ FetchContent_MakeAvailable(Catch2)
 add_executable(iree_runtime_test test/iree_runtime_test.cpp)
 target_link_libraries(iree_runtime_test PRIVATE iree_djl_core Catch2::Catch2WithMain)
 target_compile_definitions(iree_runtime_test PRIVATE
-    IREE_DJL_ADD_VMFB="${CMAKE_CURRENT_LIST_DIR}/../src/test/resources/models/add.vmfb")
+    IREE_DJL_ADD_VMFB="${CMAKE_CURRENT_LIST_DIR}/../src/test/resources/models/add.vmfb"
+    IREE_DIST_ADD_VMFB="${IREE_RUNTIME_DIST_ADD_VMFB}")
 
 # ASan/LSan leak harness — the go/no-go gate (Task 6)
 add_executable(iree_leak_harness harness/iree_leak_harness.cpp)

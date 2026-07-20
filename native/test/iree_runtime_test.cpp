@@ -92,6 +92,45 @@ TEST_CASE("import outcome is recorded for every input", "[runtime][import]") {
   free(aligned);
 }
 
+// Compiler-free post-link smoke test (Task 2, brief §Step 4): the dist
+// artifact ships its own add.vmfb, compiled by the dist project itself with
+// no compiler present anywhere in *our* build. Handover §5 describes it in
+// prose as "four int32 inputs" -- that prose does NOT match reality. Per
+// Step 4's instruction to determine the signature empirically rather than
+// hand-guess a type constant: `iree-dump-module` on the dist's add.vmfb
+// shows `sync func @add(%input0: tensor<4xf32>, %input1: tensor<4xf32>) ->
+// (%output0: tensor<4xf32>)`, and the element-type constant baked into its
+// bytecode's hal.buffer_view.assert/create calls is 0x21000020 -- that is
+// FLOAT_32, not INT_32 (0x10000020) or SINT_32 (0x11000020). Confirmed by
+// running it: f32 inputs succeed and produce [11,22,33,44]; i32 inputs are
+// rejected with INVALID_ARGUMENT ("expected f32 (21000020) but have i32
+// (10000020)"). Filed as a doc bug against the dist:
+// https://github.com/measly-java-learning/iree-runtime-dist/issues/5
+TEST_CASE("dist fixture: compiler-free smoke test", "[runtime][dist]") {
+  constexpr const char* kDistAddVmfb = IREE_DIST_ADD_VMFB;
+  auto bytes = ReadFile(kDistAddVmfb);
+  auto runtime = IreeRuntime::Load(bytes, kEntryPoint);
+
+  const float lhs[4] = {1.0f, 2.0f, 3.0f, 4.0f};
+  const float rhs[4] = {10.0f, 20.0f, 30.0f, 40.0f};
+  std::vector<measly::iree::InputDesc> inputs = {
+      {lhs, sizeof(lhs), {4}, kF32},
+      {rhs, sizeof(rhs), {4}, kF32},
+  };
+
+  auto outputs = runtime->Invoke(inputs);
+
+  REQUIRE(outputs.size() == 1);
+  REQUIRE(outputs[0].shape == std::vector<int64_t>{4});
+  REQUIRE(outputs[0].data.size() == 4 * sizeof(float));
+
+  const float* result = reinterpret_cast<const float*>(outputs[0].data.data());
+  REQUIRE(result[0] == 11.0f);
+  REQUIRE(result[1] == 22.0f);
+  REQUIRE(result[2] == 33.0f);
+  REQUIRE(result[3] == 44.0f);
+}
+
 // These four tests exist to WALK the error paths, not merely to assert
 // messages. Task 6 runs them under LSan, where a dropped iree_status_t on any
 // of these paths shows up as a leak. Error paths are the least hand-tested
