@@ -64,6 +64,7 @@ jobs:
           path: |
             ${{ github.workspace }}/src/main/resources/native/**/*.so
             ${{ github.workspace }}/src/main/resources/native/**/licenses/**
+            ${{ github.workspace }}/src/main/resources/native/**/element_types.json
           compression-level: 1 # May want to consider no compression
 
   # Future note
