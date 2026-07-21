@@ -15,5 +15,6 @@ junit-platform-launcher = { module = "org.junit.platform:junit-platform-launcher
 mockito-core            = { module = "org.mockito:mockito-core",       version.ref = "mockito" }
 
 [plugins]
+maven-publish       = { id = "com.vanniktech.maven.publish",   version = "0.37.0" }
 jacoco-to-cobertura = { id = "name.remal.jacoco-to-cobertura", version = "2.0.4" }
 jmh                 = { id = "me.champeau.jmh",                version = "0.7.2" }
