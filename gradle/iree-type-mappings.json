@@ -1,0 +1,78 @@
+[
+  {
+    "iree": "FLOAT_16",
+    "djl": "FLOAT16"
+  },
+  {
+    "iree": "FLOAT_32",
+    "djl": "FLOAT32"
+  },
+  {
+    "iree": "FLOAT_64",
+    "djl": "FLOAT64"
+  },
+  {
+    "iree": "BFLOAT_16",
+    "djl": "BFLOAT16"
+  },
+  {
+    "iree": "BOOL_8",
+    "djl": "BOOLEAN"
+  },
+  {
+    "iree": "UINT_8",
+    "djl": "UINT8"
+  },
+  {
+    "iree": "UINT_16",
+    "djl": "UINT16"
+  },
+  {
+    "iree": "UINT_32",
+    "djl": "UINT32"
+  },
+  {
+    "iree": "UINT_64",
+    "djl": "UINT64"
+  },
+  {
+    "iree": "SINT_8",
+    "djl": "INT8"
+  },
+  {
+    "iree": "SINT_16",
+    "djl": "INT16"
+  },
+  {
+    "iree": "SINT_32",
+    "djl": "INT32"
+  },
+  {
+    "iree": "SINT_64",
+    "djl": "INT64"
+  },
+  {
+    "iree": "INT_8",
+    "djl": "INT8",
+    "primary": false
+  },
+  {
+    "iree": "INT_16",
+    "djl": "INT16",
+    "primary": false
+  },
+  {
+    "iree": "INT_32",
+    "djl": "INT32",
+    "primary": false
+  },
+  {
+    "iree": "INT_64",
+    "djl": "INT64",
+    "primary": false
+  },
+  {
+    "iree": "COMPLEX_FLOAT_64",
+    "djl": "COMPLEX64"
+  }
+]

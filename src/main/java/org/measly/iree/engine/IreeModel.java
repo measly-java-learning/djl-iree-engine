@@ -17,7 +17,7 @@ public class IreeModel extends BaseModel {
      * IREE prefixes exported functions with the module name. Confirmed against
      * add.vmfb with iree-dump-module — see tools/export_add.sh.
      */
-    private static final String DEFAULT_ENTRY_POINT = "module.add";
+    private static final String DEFAULT_ENTRY_POINT = "module.main";
 
     IreeModel(String name, NDManager manager) {
         super(name);

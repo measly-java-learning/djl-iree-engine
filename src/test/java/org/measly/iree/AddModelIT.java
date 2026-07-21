@@ -10,6 +10,7 @@ import ai.djl.ndarray.NDManager;
 import ai.djl.ndarray.types.Shape;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.Map;
 import org.junit.jupiter.api.Test;
 
 /** The walking-skeleton gate: add.vmfb through a real DJL Model. */
@@ -20,7 +21,7 @@ class AddModelIT {
         Path modelDir = Paths.get("src/test/resources/models");
 
         try (Model model = Model.newInstance("add", "IREE")) {
-            model.load(modelDir, "add");
+            model.load(modelDir, "add", Map.of("entryPoint", "module.add"));
 
             try (NDManager manager = model.getNDManager().newSubManager()) {
                 NDArray lhs = manager.create(new float[] {1f, 2f, 3f, 4f}, new Shape(4));

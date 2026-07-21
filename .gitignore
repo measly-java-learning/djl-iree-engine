@@ -38,4 +38,4 @@ src/main/resources/native/**/*.dll
 src/main/resources/native/**/licenses/
 *.rpm
 bin/
-et-cmake-out/
+third-party/
