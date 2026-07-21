@@ -58,7 +58,7 @@ target_link_libraries(iree_djl_core PUBLIC iree-runtime-dist::runtime)
 include(FetchContent)
 FetchContent_Declare(Catch2
     GIT_REPOSITORY https://github.com/catchorg/Catch2.git
-    GIT_TAG v3.5.2)
+    GIT_TAG v3.15.2)
 FetchContent_MakeAvailable(Catch2)
 
 add_executable(iree_runtime_test test/iree_runtime_test.cpp)
