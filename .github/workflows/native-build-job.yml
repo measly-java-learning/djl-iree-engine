@@ -1,0 +1,76 @@
+# Reusable workflow for building the native shim for both regular builds and version publish
+name: Build IREE Native Shim
+
+on:
+  workflow_call:
+    outputs:
+      artifact-pattern:
+        description: "Pattern matching the artifact name for the built shim"
+        value: iree-libs-*
+
+jobs:
+  build-iree-shim:
+    strategy:
+      matrix:
+        include:
+          - platform: linux-x86_64
+            runner: ubuntu-latest
+            image: quay.io/pypa/manylinux_2_28_x86_64
+            corretto-jdk-url: https://corretto.aws/downloads/latest/amazon-corretto-8-x64-linux-jdk.rpm
+          # Commenting out while we wait for our upstream EtRuntimePin.cmake to support aarch64
+          #- platform: linux-aarch64
+          #  runner: ubuntu-24.04-arm
+          #  image: quay.io/pypa/manylinux_2_28_aarch64
+          # corretto-jdk-url: https://corretto.aws/downloads/latest/amazon-corretto-8-aarch64-linux-jdk.rpm
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout djl-iree-engine repository
+        uses: actions/checkout@v7
+
+      # Use a generic name for the RPM file
+      - name: Download Corretto JDK 8 RPM
+        run: |
+            curl -L -o amazon-corretto-linux-jdk.rpm ${{ matrix.corretto-jdk-url }}
+
+      # Provenance gate: prove the pinned runtime tarball was built by Repo A's CI before we link
+      # against it. URL_HASH in native/CMakeLists.txt covers integrity; this covers provenance.
+      - name: Verify IREE runtime provenance
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          url="$(grep -oE 'https://[^"]*default-${{ matrix.platform }}\.tar\.gz' native/cmake/IreeRuntimePin.cmake | head -1)"
+          test -n "${url}" || { echo "no default URL in IreeRuntimePin.cmake"; exit 1; }
+          curl -fL -o runtime.tgz "${url}"
+          gh attestation verify runtime.tgz --repo measly-java-learning/iree-runtime-dist
+          rm -f runtime.tgz
+
+      # This is very similar to how `local_build_wrapper.sh` executes build
+      # which enables testing outside of GHA
+      - name: Build the libiree_djl shim
+        run: |
+          docker run --rm \
+            -v ${{ github.workspace }}:/workspace \
+            -w /workspace \
+            ${{ matrix.image }} \
+            /bin/bash /workspace/native/build.sh
+ 
+      # Make the shim available to the next job
+      # If we care about permissions will need to interpose a `tar` step prior to upload
+      # https://github.com/actions/upload-artifact#using-outputs
+      - name: Store libiree_djl shim
+        id: shim-upload-step
+        uses: actions/upload-artifact@v7
+        with:
+          name: iree-libs-${{ matrix.platform }}
+          path: |
+            ${{ github.workspace }}/src/main/resources/native/**/*.so
+            ${{ github.workspace }}/src/main/resources/native/**/licenses/**
+          compression-level: 1 # May want to consider no compression
+
+  # Future note
+  # Windows amd64: a sibling job rather than a matrix row, because the linux rows are container-based
+  # (manylinux bakes the glibc floor into the image) and Windows has no container. Both jobs upload
+  # under the iree-libs-* pattern, so publish.yml and native-build.yml consume them unchanged.
+  # A future macOS platform would follow this same shape. 
