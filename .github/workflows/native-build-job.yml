@@ -56,9 +56,6 @@ jobs:
             ${{ matrix.image }} \
             /bin/bash /workspace/native/build.sh
  
-      # Make the shim available to the next job
-      # If we care about permissions will need to interpose a `tar` step prior to upload
-      # https://github.com/actions/upload-artifact#using-outputs
       - name: Store libiree_djl shim
         id: shim-upload-step
         uses: actions/upload-artifact@v7

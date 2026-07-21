@@ -90,5 +90,7 @@ if [[ -f "${lib}" ]]; then
   dest="${here}/../src/main/resources/native/${OUT_PLATFORM}"
   mkdir -p "${dest}"
   cp "${lib}" "${dest}/"
+  # Also stage element_types.json so the Java build can find it without the CMake build tree
+  cp "${build_dir}/_deps/iree_runtime_dist-src/share/iree-runtime-dist/element_types.json" "${dest}/"
   echo "staged: ${dest}/${OUT_LIB}"
 fi

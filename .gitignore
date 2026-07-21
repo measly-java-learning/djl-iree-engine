@@ -35,6 +35,7 @@ native/qa_noasan/
 src/main/resources/native/**/*.so
 src/main/resources/native/**/*.dylib
 src/main/resources/native/**/*.dll
+src/main/resources/native/**/*.json
 src/main/resources/native/**/licenses/
 *.rpm
 bin/

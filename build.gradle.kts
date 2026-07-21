@@ -59,7 +59,10 @@ tasks.jacocoTestReport {
 
 val ireeElementTypesPath: String =
     (findProperty("ireeElementTypes") as String?)
-        ?: "${projectDir}/native/build/_deps/iree_runtime_dist-src/share/iree-runtime-dist/element_types.json"
+        ?: fileTree("src/main/resources/native") {
+            include("**/element_types.json")
+        }.firstOrNull()?.path
+            ?: "${projectDir}/native/build/_deps/iree_runtime_dist-src/share/iree-runtime-dist/element_types.json"
 
 val generatedIreeSourcesDir = layout.buildDirectory.dir("generated/sources/iree")
 
