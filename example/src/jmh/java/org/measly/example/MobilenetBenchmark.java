@@ -16,6 +16,7 @@ import org.openjdk.jmh.annotations.BenchmarkMode;
 import org.openjdk.jmh.annotations.Level;
 import org.openjdk.jmh.annotations.Mode;
 import org.openjdk.jmh.annotations.OutputTimeUnit;
+import org.openjdk.jmh.annotations.Param;
 import org.openjdk.jmh.annotations.Scope;
 import org.openjdk.jmh.annotations.Setup;
 import org.openjdk.jmh.annotations.State;
@@ -25,19 +26,19 @@ import org.openjdk.jmh.annotations.TearDown;
  * MobileNetV2 inference latency for this IREE engine, through DJL {@code Criteria}/{@code
  * Predictor} with the plain-Java translator (no NDArray algebra; preprocessing + softmax in Java).
  *
- * <p><b>Single arm: {@code local-sync}.</b> The engine's facade currently always creates a
- * {@code local-sync} device (synchronous, single-threaded, inline), so these numbers are a
- * single-threaded figure. When runtime driver selection is exposed (the dist already ships
- * {@code local-task}), a {@code @Param} arm for {@code local-sync} vs {@code local-task} is the
- * natural extension — that is the intended second axis, not a cross-engine comparison.
+ * <p><b>Two arms: {@code local-sync} vs {@code local-task}</b> (JMH {@code @Param} on {@code
+ * device}). Both arms run the same model, same f32 weights, and the same caller contract (one
+ * invoke at a time). They differ only in whether IREE parallelizes a single invoke across an
+ * intra-op worker pool ({@code local-task}) or runs it inline on the calling thread
+ * ({@code local-sync}). The {@code local-task} arm's absolute latency is host-core-dependent
+ * (topology = driver default) — read it as the on-machine delta against {@code local-sync}, not
+ * as a portable figure.
  *
  * <p><b>Comparing against other engines is manual, by design.</b> This project is not linked to the
  * ExecuTorch/PyTorch benchmarks. To keep an eyeball comparison honest, the timed region here matches
- * that project's {@code ET_NATIVE} arm exactly: {@code predictor.predict(image)} on a
- * pre-decoded {@link Image}, with the same JMH config (warmup/iterations/fork, {@code AverageTime}
- * steady-state + {@code SingleShotTime} cold-start). The dominant caveat when eyeballing: this arm
- * is single-thread IREE llvm-cpu codegen, whereas the ExecuTorch arm is multi-threaded XNNPACK —
- * same f32 weights, different runtimes and thread counts. Directional, not authoritative.
+ * that project's {@code ET_NATIVE} arm exactly: {@code predictor.predict(image)} on a pre-decoded
+ * {@link Image}, with the same JMH config (warmup/iterations/fork, {@code AverageTime} steady-state +
+ * {@code SingleShotTime} cold-start). Directional, not authoritative.
  */
 public class MobilenetBenchmark {
 
@@ -51,6 +52,9 @@ public class MobilenetBenchmark {
         Path modelsDir;
         Image image;
         List<String> synset;
+
+        @Param({"local-sync", "local-task"})
+        String device;
 
         @Setup(Level.Trial)
         public void setup() throws Exception {
@@ -73,6 +77,7 @@ public class MobilenetBenchmark {
                 .optModelPath(cfg.modelsDir)
                 .optModelName(MODEL_NAME)
                 // Default entry point is "module.main"; the exported .vmfb uses it.
+                .optOption("device", cfg.device)
                 .optTranslator(translator)
                 .build();
     }
