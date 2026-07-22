@@ -55,8 +55,12 @@ tasks.named<JavaExec>("run") {
 }
 
 // The champeau jmh task also needs the model present before it forks the benchmark JVM.
+// A cached benchmark result is meaningless, so never let this task report UP-TO-DATE —
+// a plain `./gradlew :example:jmh` should always execute. (exportModels stays cached; only
+// the measurement itself is forced.)
 tasks.named("jmh") {
     dependsOn(exportModels)
+    outputs.upToDateWhen { false }
 }
 
 jmh {
