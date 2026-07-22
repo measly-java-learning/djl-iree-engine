@@ -38,4 +38,26 @@ class AddModelIT {
             }
         }
     }
+
+    @Test
+    void runsAddWithLocalTaskDriver() throws Exception {
+        Path modelDir = Paths.get("src/test/resources/models");
+
+        try (Model model = Model.newInstance("add", "IREE")) {
+            model.load(modelDir, "add", Map.of("entryPoint", "module.add", "device", "local-task"));
+
+            try (NDManager manager = model.getNDManager().newSubManager()) {
+                NDArray lhs = manager.create(new float[] {1f, 2f, 3f, 4f}, new Shape(4));
+                NDArray rhs = manager.create(new float[] {10f, 20f, 30f, 40f}, new Shape(4));
+
+                NDList outputs = model.getBlock().forward(null, new NDList(lhs, rhs), false);
+
+                assertEquals(1, outputs.size());
+                assertArrayEquals(
+                        new float[] {11f, 22f, 33f, 44f},
+                        outputs.get(0).toFloatArray(),
+                        1e-6f);
+            }
+        }
+    }
 }

@@ -12,8 +12,11 @@ public final class IreeNative {
 
     private IreeNative() {}
 
-    /** Returns an opaque handle to the native runtime. Caller must close it. */
-    public static native long load(byte[] vmfb, String entryPoint);
+    /**
+     * Returns an opaque handle to the native runtime. Caller must close it.
+     * {@code device} selects the IREE driver, e.g. "local-sync" or "local-task".
+     */
+    public static native long load(byte[] vmfb, String entryPoint, String device);
 
     /**
      * Runs the model. Inputs must be direct ByteBuffers; their addresses are

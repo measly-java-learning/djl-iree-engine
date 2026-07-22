@@ -19,6 +19,9 @@ public class IreeModel extends BaseModel {
      */
     private static final String DEFAULT_ENTRY_POINT = "module.main";
 
+    /** IREE driver. "local-sync" (default, single-threaded) or "local-task" (worker pool). */
+    private static final String DEFAULT_DEVICE = "local-sync";
+
     IreeModel(String name, NDManager manager) {
         super(name);
         this.manager = manager;
@@ -43,8 +46,13 @@ public class IreeModel extends BaseModel {
             entryPoint = options.get("entryPoint").toString();
         }
 
+        String device = DEFAULT_DEVICE;
+        if (options != null && options.get("device") != null) {
+            device = options.get("device").toString();
+        }
+
         byte[] bytes = Files.readAllBytes(file);
-        long handle = IreeNative.load(bytes, entryPoint);
+        long handle = IreeNative.load(bytes, entryPoint, device);
         block = new IreeSymbolBlock((IreeNDManager) manager, handle);
     }
 

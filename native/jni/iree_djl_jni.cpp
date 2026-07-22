@@ -67,7 +67,8 @@ extern "C" JNIEXPORT void JNICALL JNI_OnUnload(JavaVM* vm, void*) {
 
 extern "C" JNIEXPORT jlong JNICALL
 Java_org_measly_iree_jni_IreeNative_load(JNIEnv* env, jclass,
-                                         jbyteArray vmfb, jstring entryPoint) {
+                                         jbyteArray vmfb, jstring entryPoint,
+                                         jstring device) {
   const jsize length = env->GetArrayLength(vmfb);
   std::vector<std::byte> bytes(static_cast<size_t>(length));
   env->GetByteArrayRegion(vmfb, 0, length,
@@ -81,8 +82,16 @@ Java_org_measly_iree_jni_IreeNative_load(JNIEnv* env, jclass,
   std::string entry_copy(entry);
   env->ReleaseStringUTFChars(entryPoint, entry);
 
+  const char* drv = env->GetStringUTFChars(device, nullptr);
+  if (drv == nullptr) {
+    ThrowJava(env, "device was null");
+    return 0;
+  }
+  std::string driver_copy(drv);
+  env->ReleaseStringUTFChars(device, drv);
+
   try {
-    auto runtime = IreeRuntime::Load(bytes, entry_copy);
+    auto runtime = IreeRuntime::Load(bytes, entry_copy, driver_copy);
     return static_cast<jlong>(reinterpret_cast<intptr_t>(runtime.release()));
   } catch (const std::exception& e) {
     ThrowJava(env, e.what());
