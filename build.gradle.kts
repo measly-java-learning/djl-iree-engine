@@ -86,7 +86,7 @@ tasks.named("compileJava") {
     dependsOn(generateIreeDataTypes)
 }
 
-tasks.named("sourcesJar") {
+tasks.matching { it.name == "sourcesJar" }.configureEach {
     dependsOn(generateIreeDataTypes)
 }
 
