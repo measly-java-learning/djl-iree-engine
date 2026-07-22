@@ -164,7 +164,6 @@ TEST_CASE("rejects a shape mismatch", "[runtime][errors]") {
   };
   REQUIRE_THROWS_AS(runtime->Invoke(inputs), std::runtime_error);
 }
-
 // EMPIRICAL DEVIATION FROM THE BRIEF: this case does not throw. module.add's
 // entry function has a fixed compiled signature (tensor<4xf32>). IREE
 // validates the caller-declared element type on an input buffer view against
@@ -191,4 +190,28 @@ TEST_CASE("rejects a valid-but-mismatched element type", "[runtime][errors]") {
   };
 
   REQUIRE_THROWS_AS(runtime->Invoke(inputs), std::runtime_error);
+}
+
+TEST_CASE("local-task driver loads and matches local-sync", "[runtime][driver]") {
+  auto bytes = ReadFile(kAddVmfb);
+  auto runtime = IreeRuntime::Load(bytes, kEntryPoint, "local-task");
+  REQUIRE(runtime != nullptr);
+
+  const float lhs[4] = {1.0f, 2.0f, 3.0f, 4.0f};
+  const float rhs[4] = {10.0f, 20.0f, 30.0f, 40.0f};
+  std::vector<measly::iree::InputDesc> inputs = {
+      {lhs, sizeof(lhs), {4}, kF32},
+      {rhs, sizeof(rhs), {4}, kF32},
+  };
+  auto outputs = runtime->Invoke(inputs);
+  REQUIRE(outputs.size() == 1);
+  const float* r = reinterpret_cast<const float*>(outputs[0].data.data());
+  REQUIRE(r[0] == 11.0f);
+  REQUIRE(r[3] == 44.0f);
+}
+
+TEST_CASE("unknown driver fails cleanly at load", "[runtime][driver]") {
+  auto bytes = ReadFile(kAddVmfb);
+  REQUIRE_THROWS_AS(IreeRuntime::Load(bytes, kEntryPoint, "no-such-driver"),
+                    std::runtime_error);
 }

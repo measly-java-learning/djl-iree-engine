@@ -38,7 +38,8 @@ class IreeRuntime {
   // append-from-memory with a null allocator does not take ownership, so the
   // data must outlive the session and we own that lifetime ourselves.
   static std::unique_ptr<IreeRuntime> Load(std::span<const std::byte> vmfb,
-                                           std::string_view entryPoint);
+                                           std::string_view entryPoint,
+                                           std::string_view driver = "local-sync");
 
   ~IreeRuntime();
   IreeRuntime(const IreeRuntime&) = delete;

@@ -25,7 +25,8 @@ IreeRuntime::IreeRuntime(std::unique_ptr<RuntimeState> state)
 IreeRuntime::~IreeRuntime() = default;
 
 std::unique_ptr<IreeRuntime> IreeRuntime::Load(std::span<const std::byte> vmfb,
-                                               std::string_view entryPoint) {
+                                               std::string_view entryPoint,
+                                               std::string_view driver) {
   auto state = std::make_unique<RuntimeState>();
   state->vmfb.assign(vmfb.begin(), vmfb.end());
   state->entryPoint = std::string(entryPoint);
@@ -40,8 +41,11 @@ std::unique_ptr<IreeRuntime> IreeRuntime::Load(std::span<const std::byte> vmfb,
   state->instance.reset(raw_instance);
 
   iree_hal_device_t* raw_device = nullptr;
+  std::string driver_name(driver);
   IREE_CHECK_OR_THROW(iree_runtime_instance_try_create_default_device(
-      state->instance.get(), iree_make_cstring_view("local-sync"), &raw_device));
+      state->instance.get(),
+      iree_make_string_view(driver_name.data(), driver_name.size()),
+      &raw_device));
   state->device.reset(raw_device);
 
   iree_runtime_session_options_t session_options;
