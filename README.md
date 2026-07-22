@@ -50,9 +50,12 @@ rm -rf native/build && ./native/build.sh -DIREE_DJL_SANITIZE=ON
 ASAN_OPTIONS=detect_leaks=1 ./native/build/iree_leak_harness "" 200
 ASAN_OPTIONS=detect_leaks=1 ./native/build/iree_leak_harness "" 400
 
-# TSan gate (measured, not guaranteed by construction — see below):
+# TSan over local-sync (single-threaded; clean, measured — see below):
 rm -rf native/build && ./native/build.sh -DIREE_DJL_TSAN=ON
-setarch $(uname -m) -R ./native/build/iree_leak_harness "" 100
+setarch $(uname -m) -R ./native/build/iree_leak_harness "" 100 local-sync
+
+# TSan over local-task (worker pool). BLOCKED — currently false positives, see below:
+./native/tsan_gate.sh
 ```
 
 The TSan invocation needs `setarch $(uname -m) -R` (disabling ASLR for that one process):
@@ -70,12 +73,23 @@ running a sanitizer gate, **rebuild the plain `.so`** with `./native/build.sh` (
 `-DIREE_DJL_SANITIZE` / `-DIREE_DJL_TSAN`) before running the JVM suite again.
 
 The `iree-runtime-dist` artifact ships `IREE_ENABLE_THREADING=ON` with the `local-task` HAL
-driver compiled in, so a TSan-clean result is no longer guaranteed by construction the way it
-was when `local-sync` was the only driver linked in. It is, however, empirically true: with the
-facade selecting `local-sync` at runtime, TSan ran clean over 100 cycles, `strace -f` recorded
-**zero** `clone`/`clone3` syscalls across the whole run, and `/proc/<pid>/status` sampled
-mid-invoke read `Threads: 1`. Treat this as a measured property to re-verify if the runtime
-driver selection ever changes, not as an invariant of the linked binary.
+driver compiled in, so TSan behavior depends on which driver the harness selects (argv[3],
+default `local-sync`):
+
+- **`local-sync` (default): TSan clean, measured.** With the facade selecting `local-sync`,
+  TSan ran clean over 100 cycles, `strace -f` recorded **zero** `clone`/`clone3` syscalls, and
+  `/proc/<pid>/status` read `Threads: 1` mid-invoke. Treat this as a measured property to
+  re-verify if driver selection changes, not as an invariant of the linked binary.
+- **`local-task` (worker pool): TSan is BLOCKED on false positives.** `./native/tsan_gate.sh`
+  drives `local-task` and reports data races on the first iteration, but they are false
+  positives. The dist `default` runtime is an uninstrumented Release build (`BUILDINFO`:
+  `variant=default`; no `__tsan` symbols), and TSan requires whole-program instrumentation to
+  observe a library's synchronization — so it cannot see IREE's atomics / task-executor
+  semaphores and flags the normal main↔worker submit/execute and refcounted-free handoffs as
+  races. The harness completes correctly (right results, no crash) every run. This becomes a
+  real race gate only with a TSan-instrumented runtime variant
+  ([iree-runtime-dist#9](https://github.com/measly-java-learning/iree-runtime-dist/issues/9));
+  until then `local-task` is covered for correctness by the Catch2 and JVM tests, not for races.
 
 ## Threading
 

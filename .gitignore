@@ -31,6 +31,8 @@ native/bench/
 native/bench-results/
 native/asan/
 native/qa_noasan/
+native/qa/
+native/tsan/
 
 src/main/resources/native/**/*.so
 src/main/resources/native/**/*.dylib
