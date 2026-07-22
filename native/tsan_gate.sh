@@ -2,8 +2,9 @@
 # TSan gate for the local-task worker pool. NOT a GitHub CI job: TSan needs ASLR
 # disabled (setarch -R), unavailable on GitHub-hosted container runners.
 #
-# STATUS (2026-07-22): BLOCKED — this currently reports FALSE POSITIVES, not a passing
-# gate. TSan needs the whole program instrumented, but the iree-runtime-dist `default`
+# STATUS (2026-07-22): BLOCKED — this has reported FALSE POSITIVES on the first observed
+# iteration in every run to date (a measured result, not a construction guarantee), not a
+# passing gate. TSan needs the whole program instrumented, but the iree-runtime-dist `default`
 # artifact is an uninstrumented Release build (BUILDINFO: variant=default,
 # CMAKE_BUILD_TYPE=Release; zero __tsan symbols in lib/*.a). So TSan cannot see IREE's own
 # synchronization (iree_atomic, task-executor semaphores, resource-set refcounts) and flags

@@ -36,4 +36,7 @@ echo "--- Catch2 unit suite ---"
 echo "--- ASan/LSan leak harness (${ITERS} iterations, local-sync) ---"
 ./native/qa/iree_leak_harness src/test/resources/models/add.vmfb "${ITERS}"
 
+echo "--- ASan/LSan leak harness (${ITERS} iterations, local-task worker pool) ---"
+./native/qa/iree_leak_harness src/test/resources/models/add.vmfb "${ITERS}" local-task
+
 echo "--- native QA PASS ---"

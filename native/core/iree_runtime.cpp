@@ -41,6 +41,9 @@ std::unique_ptr<IreeRuntime> IreeRuntime::Load(std::span<const std::byte> vmfb,
   state->instance.reset(raw_instance);
 
   iree_hal_device_t* raw_device = nullptr;
+  // Copy into a std::string: std::string_view is not guaranteed null-terminated,
+  // so we need a contiguous, sized buffer to hand IREE (same reasoning as
+  // entryPoint above) — do not collapse this to iree_make_cstring_view(driver.data()).
   std::string driver_name(driver);
   IREE_CHECK_OR_THROW(iree_runtime_instance_try_create_default_device(
       state->instance.get(),

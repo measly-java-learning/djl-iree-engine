@@ -81,8 +81,8 @@ default `local-sync`):
   `/proc/<pid>/status` read `Threads: 1` mid-invoke. Treat this as a measured property to
   re-verify if driver selection changes, not as an invariant of the linked binary.
 - **`local-task` (worker pool): TSan is BLOCKED on false positives.** `./native/tsan_gate.sh`
-  drives `local-task` and reports data races on the first iteration, but they are false
-  positives. The dist `default` runtime is an uninstrumented Release build (`BUILDINFO`:
+  drives `local-task` and reported data races on the first observed iteration in every run to
+  date, but they are false positives — that is a measured result, not a construction guarantee. The dist `default` runtime is an uninstrumented Release build (`BUILDINFO`:
   `variant=default`; no `__tsan` symbols), and TSan requires whole-program instrumentation to
   observe a library's synchronization — so it cannot see IREE's atomics / task-executor
   semaphores and flags the normal main↔worker submit/execute and refcounted-free handoffs as
