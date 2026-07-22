@@ -86,6 +86,10 @@ tasks.named("compileJava") {
     dependsOn(generateIreeDataTypes)
 }
 
+tasks.named("sourcesJar") {
+    dependsOn(generateIreeDataTypes)
+}
+
 // LibUtils resolves the native library from IREE_LIBRARY_PATH before falling
 // back to the classpath copy, so this variable changes WHICH .so is under test.
 // Undeclared, it is invisible to the up-to-date check: point it elsewhere and
