@@ -29,7 +29,7 @@ tasks.test { useJUnitPlatform() }
 // Model artifacts are generated on demand into this directory
 val modelsDir = layout.buildDirectory.dir("models")
 
-val exportModels by tasks.registering(Exec::class) {
+val exportModels = tasks.register<Exec>("exportModels") {
     group = "build"
     description = "Generate MobileNetV2 .vmfb via uv (heavy; needs uv on PATH)."
     val out = modelsDir.get().asFile
