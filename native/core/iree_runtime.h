@@ -37,8 +37,12 @@ class IreeRuntime {
   // Throws std::runtime_error on failure. The vmfb bytes are COPIED: IREE's
   // append-from-memory with a null allocator does not take ownership, so the
   // data must outlive the session and we own that lifetime ourselves.
+  // `driver` selects the IREE HAL driver (default "local-sync"; e.g. "local-task"
+  // for the worker-pool driver); an unknown/unavailable driver throws
+  // std::runtime_error at load.
   static std::unique_ptr<IreeRuntime> Load(std::span<const std::byte> vmfb,
-                                           std::string_view entryPoint);
+                                           std::string_view entryPoint,
+                                           std::string_view driver = "local-sync");
 
   ~IreeRuntime();
   IreeRuntime(const IreeRuntime&) = delete;

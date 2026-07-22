@@ -35,7 +35,7 @@ class IreeNativeTest {
 
     @Test
     void loadInvokeClose() throws IOException {
-        long handle = IreeNative.load(addVmfb(), ENTRY_POINT);
+        long handle = IreeNative.load(addVmfb(), ENTRY_POINT, "local-sync");
         assertTrue(handle != 0L);
         try {
             IreeTensor[] outputs =
@@ -69,7 +69,7 @@ class IreeNativeTest {
      */
     @Test
     void reportsImportOutcomeForJavaDirectBuffers() throws IOException {
-        long handle = IreeNative.load(addVmfb(), ENTRY_POINT);
+        long handle = IreeNative.load(addVmfb(), ENTRY_POINT, "local-sync");
         try {
             IreeNative.invoke(
                     handle,
@@ -90,13 +90,44 @@ class IreeNativeTest {
     @Test
     void rejectsCorruptModel() {
         byte[] garbage = new byte[256];
-        assertThrows(RuntimeException.class, () -> IreeNative.load(garbage, ENTRY_POINT));
+        assertThrows(RuntimeException.class, () -> IreeNative.load(garbage, ENTRY_POINT, "local-sync"));
     }
 
     @Test
     void rejectsUnknownEntryPoint() throws IOException {
         assertThrows(
                 RuntimeException.class,
-                () -> IreeNative.load(addVmfb(), "module.does_not_exist"));
+                () -> IreeNative.load(addVmfb(), "module.does_not_exist", "local-sync"));
+    }
+
+    @Test
+    void loadInvokeWithLocalTaskDriver() throws IOException {
+        long handle = IreeNative.load(addVmfb(), ENTRY_POINT, "local-task");
+        assertTrue(handle != 0L);
+        try {
+            IreeTensor[] outputs =
+                    IreeNative.invoke(
+                            handle,
+                            new ByteBuffer[] {
+                                directFloats(1f, 2f, 3f, 4f),
+                                directFloats(10f, 20f, 30f, 40f)
+                            },
+                            new long[][] {{4L}, {4L}},
+                            new int[] {F32, F32});
+            assertEquals(1, outputs.length);
+            FloatBuffer result =
+                    outputs[0].getData().order(ByteOrder.nativeOrder()).asFloatBuffer();
+            assertEquals(11f, result.get(0));
+            assertEquals(44f, result.get(3));
+        } finally {
+            IreeNative.close(handle);
+        }
+    }
+
+    @Test
+    void rejectsUnknownDriver() throws IOException {
+        assertThrows(
+                RuntimeException.class,
+                () -> IreeNative.load(addVmfb(), ENTRY_POINT, "no-such-driver"));
     }
 }

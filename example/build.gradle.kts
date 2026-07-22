@@ -45,8 +45,22 @@ val exportModels = tasks.register<Exec>("exportModels") {
 }
 
 // Pass the models directory to the JVM so ModelArtifacts can resolve it at runtime.
+// dependsOn(exportModels) guarantees the .vmfb exists: absent, it is generated; present
+// (outputs up-to-date), the task is skipped and uv is never invoked. Without this, a
+// `clean` between generating and running/benchmarking wipes build/models and the app
+// fails with "Missing model artifact".
 tasks.named<JavaExec>("run") {
+    dependsOn(exportModels)
     systemProperty("example.models.dir", modelsDir.get().asFile.absolutePath)
+}
+
+// The champeau jmh task also needs the model present before it forks the benchmark JVM.
+// A cached benchmark result is meaningless, so never let this task report UP-TO-DATE —
+// a plain `./gradlew :example:jmh` should always execute. (exportModels stays cached; only
+// the measurement itself is forced.)
+tasks.named("jmh") {
+    dependsOn(exportModels)
+    outputs.upToDateWhen { false }
 }
 
 jmh {

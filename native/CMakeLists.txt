@@ -73,10 +73,14 @@ target_link_libraries(iree_leak_harness PRIVATE iree_djl_core)
 target_compile_definitions(iree_leak_harness PRIVATE
     IREE_DJL_ADD_VMFB="${CMAKE_CURRENT_LIST_DIR}/../src/test/resources/models/add.vmfb")
 
-# JNI shim (Task 7): thin marshalling layer over iree_djl_core.
-find_package(JNI REQUIRED)
-add_library(iree_djl SHARED jni/iree_djl_jni.cpp)
-target_include_directories(iree_djl PRIVATE ${JNI_INCLUDE_DIRS})
-target_link_libraries(iree_djl PRIVATE iree_djl_core)
-# Hide IREE's symbols so they cannot collide with anything else in the JVM.
-target_link_options(iree_djl PRIVATE -Wl,--exclude-libs,ALL)
+# JNI shim (Task 7): thin marshalling layer over iree_djl_core. Skipped under any
+# sanitizer: sanitized builds are QA-only, never shipped, and JVM-free — so they must
+# not require a JDK. The Catch2 units and the leak harness link iree_djl_core directly.
+if(NOT IREE_DJL_SANITIZE AND NOT IREE_DJL_TSAN)
+  find_package(JNI REQUIRED)
+  add_library(iree_djl SHARED jni/iree_djl_jni.cpp)
+  target_include_directories(iree_djl PRIVATE ${JNI_INCLUDE_DIRS})
+  target_link_libraries(iree_djl PRIVATE iree_djl_core)
+  # Hide IREE's symbols so they cannot collide with anything else in the JVM.
+  target_link_options(iree_djl PRIVATE -Wl,--exclude-libs,ALL)
+endif()

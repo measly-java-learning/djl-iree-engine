@@ -48,4 +48,5 @@ jobs:
           run: |
               ./gradlew build
               ./gradlew test
+              ./gradlew leakTest
 

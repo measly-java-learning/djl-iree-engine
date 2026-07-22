@@ -17,8 +17,11 @@ import org.measly.iree.jni.IreeTensor;
  *
  * <p><b>Not thread-safe on the same model.</b> One Model/Predictor per thread,
  * and never close a model with a forward in flight. An IREE session is not safe
- * for concurrent invocation; with the local-sync driver this contract holds all
- * the way down rather than only at this boundary.
+ * for concurrent invocation. This caller contract is identical for every driver:
+ * {@code local-task} adds an intra-op worker pool <i>below</i> this boundary
+ * (parallelizing a single invoke), but does not make concurrent invocation of
+ * one session safe. {@code local-sync} holds the contract all the way down by
+ * running everything on the calling thread.
  */
 public class IreeSymbolBlock extends AbstractSymbolBlock implements AutoCloseable {
 

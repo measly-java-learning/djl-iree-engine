@@ -55,7 +55,15 @@ jobs:
             -w /workspace \
             ${{ matrix.image }} \
             /bin/bash /workspace/native/build.sh
- 
+
+      - name: Run native QA gate (Catch2 units + ASan/LSan leak harness)
+        run: |
+          docker run --rm \
+            -v ${{ github.workspace }}:/workspace \
+            -w /workspace \
+            ${{ matrix.image }} \
+            /bin/bash /workspace/native/build_qa.sh
+
       - name: Store libiree_djl shim
         id: shim-upload-step
         uses: actions/upload-artifact@v7
