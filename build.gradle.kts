@@ -146,9 +146,34 @@ val nativeJarTasks = nativePlatforms.map { platform ->
   }
 }
 
-publishing {
-    publications.withType<MavenPublication>().configureEach {
-        nativeJarTasks.forEach { artifact(it) }
+// Publish each native jar as a real GMM variant (not just a bare classified artifact) so Gradle
+// consumers can select it via attributes/capability instead of a Maven classifier string. The
+// per-platform capability keeps the variants out of default resolution: without it, both native
+// variants match the standard JVM attribute set and an attribute-less consumer hits ambiguity.
+val nativeVariants = nativePlatforms.map { platform ->
+    val osFamily = platform.substringBefore("-") // linux / windows
+    configurations.consumable("nativeRuntimeElements-${platform}") {
+        attributes {
+            attribute(Category.CATEGORY_ATTRIBUTE, objects.named(Category.LIBRARY))
+            attribute(Usage.USAGE_ATTRIBUTE, objects.named(Usage.JAVA_RUNTIME))
+            attribute(Bundling.BUNDLING_ATTRIBUTE, objects.named(Bundling.EXTERNAL))
+            attribute(LibraryElements.LIBRARY_ELEMENTS_ATTRIBUTE, objects.named(LibraryElements.JAR))
+            attribute(OperatingSystemFamily.OPERATING_SYSTEM_ATTRIBUTE, objects.named(osFamily))
+            attribute(
+                MachineArchitecture.ARCHITECTURE_ATTRIBUTE,
+                objects.named(MachineArchitecture.X86_64)
+            )
+        }
+        outgoing {
+            capability("${project.group}:djl-iree-engine-${platform}:${project.version}")
+            artifact(tasks.named("nativeJar-${platform}"))
+        }
+    }
+}
+
+(components["java"] as AdhocComponentWithVariants).apply {
+    nativeVariants.forEach { variant ->
+        addVariantsFromConfiguration(variant.get()) { mapToOptional() }
     }
 }
 

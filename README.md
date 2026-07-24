@@ -8,6 +8,47 @@ at what cost. It runs a trivial `add` model end to end and answers the go/no-go 
 not a product — see the deferred list in the design doc and the findings doc. Linux-x86_64
 only.
 
+### Supported platforms
+
+| Platform | Artifact | HAL driver | QA |
+|---|---|---|---|
+| `linux-x86_64` | `libiree_djl.so` | `local-sync` (default), `local-task` | Catch2 + ASan/LSan leak harness; TSan (see [Native QA](#native-qa)) |
+
+The native library ships in a per-platform classifier jar (`<artifact>-<platform>.jar`) and is
+extracted on first load to a temp file (`java.io.tmpdir`), deleted on JVM exit. Set
+`IREE_LIBRARY_PATH` to load a specific library instead and bypass extraction entirely. Unlike a
+production engine, there is no content-addressed extraction cache here — see
+`LibUtils`'s javadoc for why that's deferred.
+
+### Declaring the dependency
+
+The native jar is published as a Gradle variant with a per-platform capability, so Gradle
+consumers should request the platform by capability rather than by classifier:
+
+```kotlin
+dependencies {
+    implementation("org.measly:djl-iree-engine:<version>")
+    runtimeOnly("org.measly:djl-iree-engine:<version>") {
+        capabilities { requireCapability("org.measly:djl-iree-engine-linux-x86_64") }
+    }
+}
+```
+
+Maven consumers add the classifier form alongside the main (classifier-less) dependency:
+
+```xml
+<dependency>
+    <groupId>org.measly</groupId>
+    <artifactId>djl-iree-engine</artifactId>
+    <version>&lt;version&gt;</version>
+    <classifier>linux-x86_64</classifier>
+    <scope>runtime</scope>
+</dependency>
+```
+
+There is only one platform today; the capability form exists so a second platform (e.g.
+`windows-x86_64`) can land later without breaking consumers already pinned to a capability.
+
 ## Prerequisites
 
 The engine consumes the published `iree-runtime-dist` v3.11.0-3 artifact — a hash-pinned tarball
@@ -95,6 +136,23 @@ default `local-sync`):
 
 `IreeSymbolBlock.forward()` is not thread-safe on the same model. Use one
 `Model`/`Predictor` per thread, and never close a model with a forward in flight.
+
+## Third-party licenses
+
+The native library (`libiree_djl.so`) statically links third-party components from the
+pinned `iree-runtime-dist` tarball. The components linked into the shipped library are:
+
+| Component | License |
+|---|---|
+| IREE runtime (HAL, VM, local-sync/local-task drivers) | Apache-2.0 |
+| FlatCC | Apache-2.0 |
+| libbacktrace | BSD-3-Clause |
+| printf | MIT |
+
+Full license texts for these are bundled in the native classifier jar under
+`META-INF/licenses/iree-runtime/` (`LICENSE` + `THIRD-PARTY-NOTICES/`), sourced verbatim
+from the runtime tarball (`native/build.sh` stages them next to the `.so`). This list is
+tied to the runtime pin (`native/cmake/IreeRuntimePin.cmake`); refresh it when the pin bumps.
 
 ## Docs
 
