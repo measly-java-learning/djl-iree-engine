@@ -4,6 +4,11 @@
 #include "core/iree_handles.h"
 #include "core/iree_status.h"
 #include "iree/hal/buffer_view_util.h"
+#include "iree/io/file_handle.h"
+#include "iree/io/formats/parser_registry.h"
+#include "iree/io/parameter_index.h"
+#include "iree/io/parameter_index_provider.h"
+#include "iree/modules/io/parameters/module.h"
 #include "iree/runtime/api.h"
 
 namespace measly::iree {
@@ -16,6 +21,14 @@ struct RuntimeState {
   std::string entryPoint;
   InstancePtr instance;
   DevicePtr device;
+  // Parameter chain. Declared BEFORE `session` so all of it outlives the
+  // session: the io_parameters module is retained by the context, but whether
+  // the provider/index/file-handle chain is transitively retained is exactly
+  // what Task 5 probes. Holding them here is the conservative starting point.
+  std::vector<FileHandlePtr> paramFiles;
+  std::vector<ParameterIndexPtr> paramIndices;
+  std::vector<ParameterProviderPtr> paramProviders;
+  VmModulePtr paramsModule;
   SessionPtr session;
   std::vector<IreeRuntime::ImportOutcome> lastImportOutcomes;
 };
@@ -27,6 +40,12 @@ IreeRuntime::~IreeRuntime() = default;
 std::unique_ptr<IreeRuntime> IreeRuntime::Load(std::span<const std::byte> vmfb,
                                                std::string_view entryPoint,
                                                std::string_view driver) {
+  return Load(vmfb, entryPoint, driver, std::span<const ParameterScope>{});
+}
+
+std::unique_ptr<IreeRuntime> IreeRuntime::Load(
+    std::span<const std::byte> vmfb, std::string_view entryPoint,
+    std::string_view driver, std::span<const ParameterScope> parameters) {
   auto state = std::make_unique<RuntimeState>();
   state->vmfb.assign(vmfb.begin(), vmfb.end());
   state->entryPoint = std::string(entryPoint);
@@ -58,6 +77,58 @@ std::unique_ptr<IreeRuntime> IreeRuntime::Load(std::span<const std::byte> vmfb,
       state->instance.get(), &session_options, state->device.get(),
       iree_allocator_system(), &raw_session));
   state->session.reset(raw_session);
+
+  // Parameter archives, if any. This MUST happen before the bytecode module is
+  // appended: import resolution runs when the bytecode module is registered
+  // against the modules already in the context.
+  if (!parameters.empty()) {
+    std::vector<iree_io_parameter_provider_t*> raw_providers;
+    raw_providers.reserve(parameters.size());
+
+    for (const auto& param : parameters) {
+      // 1. Open the archive. RANDOM_ACCESS is the mmap-friendly mode.
+      iree_io_file_handle_t* raw_file = nullptr;
+      IREE_CHECK_OR_THROW(iree_io_file_handle_open(
+          IREE_IO_FILE_MODE_READ | IREE_IO_FILE_MODE_RANDOM_ACCESS,
+          iree_make_string_view(param.path.data(), param.path.size()),
+          iree_allocator_system(), &raw_file));
+      state->paramFiles.emplace_back(raw_file);
+
+      // 2. Parse it into an index. The path is passed too so the registry can
+      //    pick a parser by extension.
+      iree_io_parameter_index_t* raw_index = nullptr;
+      IREE_CHECK_OR_THROW(
+          iree_io_parameter_index_create(iree_allocator_system(), &raw_index));
+      state->paramIndices.emplace_back(raw_index);
+      IREE_CHECK_OR_THROW(iree_io_parse_file_index(
+          iree_make_string_view(param.path.data(), param.path.size()),
+          state->paramFiles.back().get(), state->paramIndices.back().get(),
+          iree_allocator_system()));
+
+      // 3. Wrap in a provider bound to the caller's scope name.
+      iree_io_parameter_provider_t* raw_provider = nullptr;
+      IREE_CHECK_OR_THROW(iree_io_parameter_index_provider_create(
+          iree_make_string_view(param.scope.data(), param.scope.size()),
+          state->paramIndices.back().get(),
+          IREE_IO_PARAMETER_INDEX_PROVIDER_DEFAULT_MAX_CONCURRENT_OPERATIONS,
+          iree_allocator_system(), &raw_provider));
+      state->paramProviders.emplace_back(raw_provider);
+      raw_providers.push_back(state->paramProviders.back().get());
+    }
+
+    // 4. One module for all providers -- module_create takes an array, so
+    //    multiple scopes need one module, not several.
+    iree_vm_module_t* raw_module = nullptr;
+    IREE_CHECK_OR_THROW(iree_io_parameters_module_create(
+        iree_runtime_instance_vm_instance(state->instance.get()),
+        raw_providers.size(), raw_providers.data(), iree_allocator_system(),
+        &raw_module));
+    state->paramsModule.reset(raw_module);
+
+    // 5. Append BEFORE the bytecode module.
+    IREE_CHECK_OR_THROW(iree_runtime_session_append_module(
+        state->session.get(), state->paramsModule.get()));
+  }
 
   IREE_CHECK_OR_THROW(iree_runtime_session_append_bytecode_module_from_memory(
       state->session.get(),

@@ -54,6 +54,31 @@ target_link_libraries(link_smoke_test PRIVATE iree-runtime-dist::runtime)
 add_library(iree_djl_core STATIC core/iree_runtime.cpp)
 target_include_directories(iree_djl_core PUBLIC "${CMAKE_CURRENT_LIST_DIR}")
 target_link_libraries(iree_djl_core PUBLIC iree-runtime-dist::runtime)
+# The curated iree-runtime-dist::runtime umbrella (libiree_runtime_unified.a)
+# does NOT include the io_parameters stack -- confirmed by nm: only
+# iree_io_file_handle_open lives in the unified archive. Everything else
+# needed to bind an IRPA archive to a scope and expose it as a VM module
+# lives in separate archives from the same IREETargets-Runtime export set,
+# so link them explicitly:
+#   - iree_io_formats_parser_registry: iree_io_parse_file_index (dispatches
+#     by extension) -- and it has HARD (non-weak) undefined refs to all three
+#     format parsers, so all three format archives must be present even
+#     though we only use IRPA.
+#   - iree_io_formats_irpa_irpa / _gguf_gguf / _safetensors_safetensors
+#   - iree_io_parameter_index: the index container
+#   - iree_io_parameter_provider: base provider interface
+#     (iree_io_parameter_provider_release/retain etc.)
+#   - iree_io_parameter_index_provider: iree_io_parameter_index_provider_create
+#   - iree_modules_io_parameters_parameters: iree_io_parameters_module_create
+target_link_libraries(iree_djl_core PUBLIC
+    iree_io_formats_parser_registry
+    iree_io_formats_irpa_irpa
+    iree_io_formats_gguf_gguf
+    iree_io_formats_safetensors_safetensors
+    iree_io_parameter_index
+    iree_io_parameter_provider
+    iree_io_parameter_index_provider
+    iree_modules_io_parameters_parameters)
 
 include(FetchContent)
 FetchContent_Declare(Catch2
@@ -66,6 +91,13 @@ target_link_libraries(iree_runtime_test PRIVATE iree_djl_core Catch2::Catch2With
 target_compile_definitions(iree_runtime_test PRIVATE
     IREE_DJL_ADD_VMFB="${CMAKE_CURRENT_LIST_DIR}/../src/test/resources/models/add.vmfb"
     IREE_DIST_ADD_VMFB="${IREE_RUNTIME_DIST_ADD_VMFB}")
+
+add_executable(iree_params_test test/iree_params_test.cpp)
+target_link_libraries(iree_params_test PRIVATE iree_djl_core Catch2::Catch2WithMain)
+target_compile_definitions(iree_params_test PRIVATE
+    IREE_DJL_SCALE_VMFB="${CMAKE_CURRENT_LIST_DIR}/../src/test/resources/models/scale.vmfb"
+    IREE_DJL_SCALE_IRPA="${CMAKE_CURRENT_LIST_DIR}/../src/test/resources/models/scale_weights.irpa"
+    IREE_DJL_SCALE_IRPA_ZERO="${CMAKE_CURRENT_LIST_DIR}/../src/test/resources/models/scale_weights_zero.irpa")
 
 # ASan/LSan leak harness — the go/no-go gate (Task 6)
 add_executable(iree_leak_harness harness/iree_leak_harness.cpp)
