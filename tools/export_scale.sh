@@ -45,5 +45,15 @@ done
 "${IREE_CREATE_PARAMS}" --data=weight=4xf32 \
   --output="${out_dir}/scale_weights_zero.irpa"
 
+"${IREE_COMPILE}" \
+  --iree-hal-target-device=local \
+  --iree-hal-local-target-device-backends=llvm-cpu \
+  --iree-llvmcpu-target-cpu=generic \
+  "${here}/scale2.mlir" -o "${out_dir}/scale2.vmfb"
+
+# Second archive, bound under a different scope at load time.
+"${IREE_CREATE_PARAMS}" --splat=offset=4xf32=10.0 \
+  --output="${out_dir}/scale2_bias.irpa"
+
 echo "wrote:"
-ls -la "${out_dir}"/scale.vmfb "${out_dir}"/scale_weights*.irpa
+ls -la "${out_dir}"/scale.vmfb "${out_dir}"/scale2.vmfb "${out_dir}"/scale_weights*.irpa "${out_dir}"/scale2_bias.irpa

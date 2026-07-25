@@ -29,6 +29,8 @@ std::vector<std::byte> ReadFile(const char* path) {
 constexpr const char* kScaleVmfb = IREE_DJL_SCALE_VMFB;
 constexpr const char* kScaleIrpa = IREE_DJL_SCALE_IRPA;
 constexpr const char* kEntryPoint = "module.scale";
+constexpr const char* kScale2Vmfb = IREE_DJL_SCALE2_VMFB;
+constexpr const char* kScale2BiasIrpa = IREE_DJL_SCALE2_BIAS_IRPA;
 constexpr int32_t kF32 = 0x21000020;  // IREE_HAL_ELEMENT_TYPE_FLOAT_32
 }  // namespace
 
@@ -63,6 +65,34 @@ TEST_CASE("golden vector: parameter-backed scale", "[params]") {
   // The archive is a splat of 2.0, so the program computes input * 2.
   // Matches the iree-run-module oracle: 4xf32=1,2,3,4 -> 2 4 6 8.
   const std::vector<float> want = {2.0f, 4.0f, 6.0f, 8.0f};
+  for (size_t i = 0; i < want.size(); ++i) {
+    REQUIRE(std::fabs(got[i] - want[i]) < 1e-6f);
+  }
+}
+
+TEST_CASE("two archives bound to two scopes", "[params]") {
+  auto bytes = ReadFile(kScale2Vmfb);
+  const ParameterScope scopes[] = {
+      {"model", kScaleIrpa},
+      {"bias", kScale2BiasIrpa},
+  };
+  auto runtime = IreeRuntime::Load(bytes, "module.scale2", "local-sync", scopes);
+
+  const std::vector<float> input = {1.0f, 2.0f, 3.0f, 4.0f};
+  InputDesc desc;
+  desc.data = input.data();
+  desc.nbytes = input.size() * sizeof(float);
+  desc.shape = {4};
+  desc.elementType = kF32;
+
+  const InputDesc inputs[] = {desc};
+  auto outputs = runtime->Invoke(inputs);
+
+  REQUIRE(outputs.size() == 1);
+  std::vector<float> got(4);
+  std::memcpy(got.data(), outputs[0].data.data(), outputs[0].data.size());
+  // input * 2 (model::weight splat) + 10 (bias::offset splat)
+  const std::vector<float> want = {12.0f, 14.0f, 16.0f, 18.0f};
   for (size_t i = 0; i < want.size(); ++i) {
     REQUIRE(std::fabs(got[i] - want[i]) < 1e-6f);
   }
