@@ -21,9 +21,7 @@ struct RuntimeState {
   std::string entryPoint;
   InstancePtr instance;
   DevicePtr device;
-  // No parameter-chain members here. VERIFIED 2026-07-25 by deliberate-drop
-  // probing under ASan (native/test/iree_params_test.cpp, all 4 cases, zero
-  // LeakSanitizer reports at every step): each level of the parameter chain
+  // No parameter-chain members here. Each level of the parameter chain
   // retains the one below it internally, so nothing in that chain needs to
   // outlive `Load`:
   //   - the session/context retains the io_parameters module
@@ -34,10 +32,14 @@ struct RuntimeState {
   //     (iree_io_parameter_index_retain, io/parameter_index_provider.c)
   //   - the index retains the file handle for every FILE-backed entry added
   //     to it (iree_io_file_handle_retain, io/parameter_index.c)
-  // Confirmed both by reading those call sites and by scoping each handle to
-  // a local that releases before Load returns, one level at a time, with
-  // iree_params_test staying green and leak-free at every step (task-5
-  // report has the per-probe log). Only the file/index/provider/module are
+  // The first three (module/provider/index) are VERIFIED 2026-07-25 by
+  // deliberate-drop probing under ASan (native/test/iree_params_test.cpp,
+  // all 4 cases, zero LeakSanitizer reports at every step) *and* by reading
+  // the retain call sites above. The fourth (file handle) is verified by
+  // source reading only: iree_params_test's fixtures are splat-only, so the
+  // FILE branch that does the retain is never exercised by that suite --
+  // see Task 7 for the FILE-backed differential test (task-5 report has the
+  // per-probe log and this caveat). Only the file/index/provider/module are
   // scoped locally inside Load's parameter-loading block now; see there.
   SessionPtr session;
   std::vector<IreeRuntime::ImportOutcome> lastImportOutcomes;
@@ -97,11 +99,14 @@ std::unique_ptr<IreeRuntime> IreeRuntime::Load(
     // Locally scoped: Task 5 proved under ASan that the io_parameters module
     // retains each provider, so nothing here needs to outlive this block.
     std::vector<ParameterProviderPtr> scoped_providers;
+    scoped_providers.reserve(parameters.size());
 
     for (const auto& param : parameters) {
       // 1. Open the archive. RANDOM_ACCESS is the mmap-friendly mode.
       //    Locally scoped: the parameter index retains the file handle for
-      //    every FILE-backed entry it is given (verified under ASan).
+      //    every FILE-backed entry it is given (verified by source reading,
+      //    io/parameter_index.c:185, FILE branch). NOT exercised by
+      //    iree_params_test, whose fixtures are splat-only -- see Task 7.
       iree_io_file_handle_t* raw_file = nullptr;
       IREE_CHECK_OR_THROW(iree_io_file_handle_open(
           IREE_IO_FILE_MODE_READ | IREE_IO_FILE_MODE_RANDOM_ACCESS,
