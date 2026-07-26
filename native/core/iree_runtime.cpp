@@ -91,25 +91,27 @@ std::unique_ptr<IreeRuntime> IreeRuntime::Load(
 
     for (const auto& param : parameters) {
       // 1. Open the archive. RANDOM_ACCESS is the mode used for the pread(2)s
-      //    that later fetch parameter spans (hal/utils/fd_file.c:442) -- IREE
+      //    that later fetch parameter spans (hal/utils/fd_file.c:311) -- IREE
       //    only mmaps this file transiently, inside iree_io_parse_file_index
-      //    below, to parse the index (irpa_parser.c:330), then unmaps it.
+      //    below, to parse the index (irpa_parser.c:334), then unmaps it.
       //    Locally scoped: the parameter index retains the file handle for
       //    every FILE-backed entry it is given (verified by source reading,
       //    io/parameter_index.c:185, FILE branch). This retain is
       //    LOAD-BEARING, not defensive: the index stores only {handle,
-      //    offset} per entry (irpa_parser.c:125), so no parameter bytes are
-      //    resident yet -- they are pread() later, at io_parameters.load
-      //    time, through this same retained handle (parameter_index_provider.c:149,
-      //    fd_file.c:442). Task 7's FILE-backed differential dropped this
+      //    offset} per entry (irpa_parser.c:140-152), so no parameter bytes
+      //    are resident yet -- they are pread() later, at io_parameters.load
+      //    time, through this same retained handle (parameter_index_provider.c:147,
+      //    fd_file.c:311). Task 7's FILE-backed differential dropped this
       //    local handle immediately after parse, against the FILE-backed
-      //    scale_weights_zero.irpa fixture, and got zero faults plus the
-      //    correct golden output on a SUBSEQUENT real read through the
-      //    index's retained reference -- a genuine positive result for the
-      //    retain (had it not fired, that later pread would have been a
-      //    use-after-free on a freed handle/closed fd, which ASan would have
-      //    caught). See iree_params_test.cpp's "golden vector: FILE-backed
+      //    scale_weights_zero.irpa fixture, and ASan reported no
+      //    use-after-free on the SUBSEQUENT real read through the index's
+      //    retained reference. That absent fault is the evidence: had the
+      //    retain not fired, the later pread would have hit a freed handle
+      //    and closed fd. (The golden output is the weaker half -- the
+      //    fixture is zeroed, so a silently-zeroed buffer would look
+      //    identical.) See iree_params_test.cpp's "golden vector: FILE-backed
       //    (zeroed) archive" case and docs/2026-07-25-irpa-spike-findings.md.
+      //    Line numbers cite IREE at the pinned commit e4a3b0405d.
       iree_io_file_handle_t* raw_file = nullptr;
       IREE_CHECK_OR_THROW(iree_io_file_handle_open(
           IREE_IO_FILE_MODE_READ | IREE_IO_FILE_MODE_RANDOM_ACCESS,

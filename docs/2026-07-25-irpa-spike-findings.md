@@ -145,7 +145,7 @@ object releasing at the end of the scope in which it is last needed (e.g. the fi
 releases right after `iree_io_parse_file_index` returns), then `native/asan/iree_params_test`
 was rebuilt and run. Each successful drop was kept before probing the next level, so the
 results compound: the final `RuntimeState` has all four members removed simultaneously, and
-both `iree_params_test` (9 cases, 36 assertions) and `iree_runtime_test` (11 cases, 36
+both `iree_params_test` (9 cases, 38 assertions) and `iree_runtime_test` (11 cases, 36
 assertions) pass with zero LeakSanitizer reports. Every `_retain()` call site above was then
 read directly in the IREE source (checkout at `~/workspace/iree`), so the "no leaks" result is
 understood mechanistically rather than merely observed.
@@ -175,7 +175,7 @@ holding the *only* reference across a subsequent real read. Had the index's reta
 that `pread` would be operating on a freed `iree_io_file_handle_t` and a closed fd — a genuine
 use-after-free ASan would have caught.
 
-Result: zero faults under ASan across `iree_params_test` (9 cases, 36 assertions) and a
+Result: zero faults under ASan across `iree_params_test` (9 cases, 38 assertions) and a
 500-cycle load/invoke/close run of `iree_leak_harness` with the archive bound. The golden output
 (`0,0,0,0` — input × the zeroed archive) is checked in both, but zero is the weakest possible
 golden value: a read that silently returned a zeroed buffer (e.g. from freed/unmapped memory the
@@ -253,7 +253,7 @@ wrong.**
   `iree_io_parse_irpa_index` calls `iree_io_file_map_view(..., IREE_HOST_SIZE_MAX, ...)`
   (`irpa_parser.c:334`), which reaches a real `mmap(..., MAP_SHARED, fd, offset)`
   (`io/file_handle.c:708`). That mapping is unmapped as soon as the index is built
-  (`irpa_parser.c:342`). This is also why the Q9 zero-byte error says "failed to **map** file
+  (`irpa_parser.c:343`). This is also why the Q9 zero-byte error says "failed to **map** file
   handle range" — a real `mmap(2)` failing, not a metaphor.
 - The index stores only `{file handle, offset}` per entry (`irpa_parser.c:139-151`) — no bytes.
 - Parameter bytes are fetched later, span by span, by **`pread(2)`** on the retained fd into

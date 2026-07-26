@@ -59,10 +59,12 @@ built to be **`mmap`'d from disk** (aligned data section, zero-copy).~~
 
 **What is actually true.** There is **no persistent mmap** of the archive, and there **is**
 a copy. IREE `mmap`s the file only *transiently*, to parse the index
-(`irpa_parser.c:330`, unmapped again at `:342`); the index then holds only `{file handle,
+(`irpa_parser.c:334`, unmapped again at `:343`); the index then holds only `{file handle,
 offset}` per entry. Parameter bytes are read later by **`pread(2)`** on the retained file
-descriptor (`hal/utils/fd_file.c:442`) into HAL buffers. So "passing bytes throws away the
+descriptor (`hal/utils/fd_file.c:311`) into HAL buffers. So "passing bytes throws away the
 mmap" was never the cost — there is no mmap to throw away.
+
+*(All IREE line numbers in this document cite the pinned commit `e4a3b0405d`.)*
 
 - **Right approach, for the corrected reason:** pass the `.irpa` **file path** (a `String`)
   across the boundary. IREE opens and **owns the file descriptor**, and does positional reads
@@ -81,12 +83,13 @@ depended on a claim that turned out to be false.
 So the marshalling the question worried about is the **easy** part.
 
 *(If archive read cost ever does matter, `iree_io_file_handle_preload`
-(`io/file_handle.h:216`) is the documented lever to the genuine zero-copy
+(`io/file_handle.h:221`) is the documented lever to the genuine zero-copy
 `iree_hal_allocator_import_buffer` path. Not exercised; see the findings doc.)*
 
 ### The real work is native runtime wiring
 Before appending the bytecode module, `Load` would need to:
-1. open the IRPA as a file handle (mmap),
+1. open the IRPA as a file handle (IREE owns the fd; see the corrected
+   marshalling note above — the mapping is transient, index-parse only),
 2. parse into `iree_io_parameter_index_t` (`iree_io_parse_file_index`),
 3. wrap in a provider with a **scope** (`iree_io_parameter_index_provider_create`),
 4. create the `io_parameters` VM module (`iree_io_parameters_module_create`),
@@ -281,7 +284,7 @@ Why disclaim rather than support:
   where they can write. Pushing it up is the correct layering, not a cop-out.
 
 This subsumes the earlier "prefer a directory convention" leaning: a directory layout is still
-what the files sit in (loose, mmap-able, glibc-hwcaps precedent), but **the manifest is the
+what the files sit in (loose and openable by real path, glibc-hwcaps precedent), but **the manifest is the
 entry point**, not directory scanning. That removes the filename-guessing conventions Part 1
 was worried about — there is nothing to guess when the map is written down.
 

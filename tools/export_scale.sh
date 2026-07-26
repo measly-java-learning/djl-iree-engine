@@ -40,8 +40,11 @@ done
 "${IREE_CREATE_PARAMS}" --splat=weight=4xf32=2.0 \
   --output="${out_dir}/scale_weights.irpa"
 
-# Zeroed: real on-disk storage. Used by the mmap check, which needs actual
-# mapped bytes -- a splat archive has nothing to map.
+# Zeroed: real on-disk storage. Used by the FILE-backed checks, which need an
+# entry whose bytes actually live on disk. (Not "needs mapped bytes" -- IREE
+# pread(2)s the data spans off the fd it owns; it only mmaps the file
+# transiently to parse the index. A splat archive has no on-disk storage at
+# all, so it never takes the FILE branch.)
 #
 # MUST stay --data= (FILE-backed entry, type 0x02), never --splat= (SPLAT entry,
 # type 0x01, no on-disk storage): iree_params_test's FILE-backed test and the
