@@ -33,7 +33,9 @@ struct RuntimeState;  // pimpl
 // One parameter archive bound to a scope name. `scope` is the name the compiled
 // program references (e.g. "model" for #stream.parameter.named<"model"::"weight">);
 // an empty scope binds the archive's global scope. `path` is a filesystem path --
-// IRPA is mmap'd from disk by design, so we never marshal the bytes.
+// IREE opens and owns the file descriptor and does positional reads (pread) of
+// only the spans the program imports, so the caller never has to buffer the
+// archive.
 //
 // NOTE: the scope is a RUNTIME BINDING, not a property of the archive. The same
 // .irpa can be bound under any scope name.

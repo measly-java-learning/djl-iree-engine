@@ -21,33 +21,14 @@ struct RuntimeState {
   std::string entryPoint;
   InstancePtr instance;
   DevicePtr device;
-  // No parameter-chain members here. Each level of the parameter chain
-  // retains the one below it internally, so nothing in that chain needs to
-  // outlive `Load`:
-  //   - the session/context retains the io_parameters module
-  //     (iree_vm_context via iree_vm_module_retain, context.c)
-  //   - the io_parameters module retains each provider
-  //     (iree_io_parameter_provider_retain, modules/io/parameters/module.c)
-  //   - the index provider retains the index
-  //     (iree_io_parameter_index_retain, io/parameter_index_provider.c)
-  //   - the index retains the file handle for every FILE-backed entry added
-  //     to it (iree_io_file_handle_retain, io/parameter_index.c)
-  // All four levels are VERIFIED 2026-07-25 by deliberate-drop probing under
-  // ASan (native/test/iree_params_test.cpp, zero LeakSanitizer reports at
-  // every step) *and* by reading the retain call sites above. The first
-  // three (module/provider/index) were verified against the suite's splat
-  // fixtures in Task 5. The fourth (file handle) needed a FILE-backed
-  // fixture to exercise the FILE branch of iree_io_parameter_index_add
-  // (io/parameter_index.c:185) at all -- Task 5's probe was inert against
-  // splat-only fixtures (nothing to dangle). Task 7 added a FILE-backed case
-  // (scale_weights_zero.irpa) and re-ran the drop: dropping the local file
-  // handle immediately after iree_io_parse_file_index returns produced zero
-  // faults and the correct golden output on a SUBSEQUENT real pread() of
-  // parameter data through the index's own retained reference to that
-  // handle (parameter_index_provider.c:149, hal/utils/fd_file.c:442) -- a
-  // load-bearing confirmation of the retain, not just an absence-of-leak
-  // result. Only the file/index/provider/module are scoped locally inside
-  // Load's parameter-loading block now; see there.
+  // No parameter-chain members here. IREE retains every level of the chain
+  // internally (file handle <- index <- provider <- io_parameters module <-
+  // session/context), so the caller holds none of it -- the file/index/
+  // provider/module are scoped locally inside Load's parameter-loading block
+  // and released before Load returns. Maintainer rule: IREE retains every
+  // level; hold nothing. Verified under ASan by deliberate-drop probing; see
+  // the ownership table and the FILE-backed differential in
+  // docs/2026-07-25-irpa-spike-findings.md for the full evidence.
   SessionPtr session;
   std::vector<IreeRuntime::ImportOutcome> lastImportOutcomes;
 };

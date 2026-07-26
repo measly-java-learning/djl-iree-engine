@@ -136,7 +136,7 @@ members on `RuntimeState`.
 | Handle type | Retained by whom | Must we hold it? | Evidence |
 |---|---|---|---|
 | File handle (`iree_io_file_handle_t`) — **load-bearing, verified empirically by Task 7** | The parameter index — `iree_io_parameter_index_add` calls `iree_io_file_handle_retain` for every FILE-backed entry (`io/parameter_index.c:185`) | No | See the FILE-backed differential below. |
-| Parameter index (`iree_io_parameter_index_t`) | The index provider — `iree_io_parameter_index_provider_create` calls `iree_io_parameter_index_retain` (`io/parameter_index_provider.c:64`) | No | Dropped deliberately; PASS, clean under ASan. |
+| Parameter index (`iree_io_parameter_index_t`) | The index provider — `iree_io_parameter_index_provider_create` calls `iree_io_parameter_index_retain` (`io/parameter_index_provider.c:62`) | No | Dropped deliberately; PASS, clean under ASan. |
 | Parameter provider (`iree_io_parameter_provider_t`) | The io_parameters module — `iree_io_parameters_module_create` calls `iree_io_parameter_provider_retain` per provider (`modules/io/parameters/module.c:518`) | No | Dropped deliberately; PASS, clean under ASan. |
 | io_parameters module (`iree_vm_module_t`) | The session/context — appending a module calls `iree_vm_module_retain` (`vm/context.c:444`/`597`), matching the documented claim at `session.h:143` | No | Dropped deliberately; PASS, clean under ASan. |
 
@@ -165,20 +165,26 @@ immediately after `iree_io_parse_file_index` returns.
 
 The differential is sensitive because **parameter data is lazy**.
 `iree_io_parse_irpa_v0_data_entry` stores only `{handle, offset}` per entry
-(`irpa_parser.c:125`); no bytes are resident when parsing returns. They are fetched later,
-during `io_parameters.load`, when `iree_io_parameter_index_provider_resolve` dereferences
-`entry->storage.file.handle` (`parameter_index_provider.c:149`) and imports it as a HAL file,
-which for an FD-backed handle retains it again (`hal/utils/fd_file.c:345`) and `pread`s the
-span (`fd_file.c:442`). Dropping our reference right after parse therefore leaves the index
+(`irpa_parser.c:139-151`, inside the function starting at `:124`); no bytes are resident when
+parsing returns. They are fetched later, during `io_parameters.load`, when
+`iree_io_parameter_index_provider_resolve` dereferences `entry->storage.file.handle`
+(`parameter_index_provider.c:147`) and imports it as a HAL file, which for an FD-backed handle
+retains it again (`hal/utils/fd_file.c:247`) and `pread`s the span (`fd_file.c:311`). Dropping
+our reference right after parse therefore leaves the index
 holding the *only* reference across a subsequent real read. Had the index's retain not fired,
 that `pread` would be operating on a freed `iree_io_file_handle_t` and a closed fd — a genuine
 use-after-free ASan would have caught.
 
-Result: **zero faults under ASan and the correct golden output (`0,0,0,0` — input × the zeroed
-archive)** across `iree_params_test` (9 cases, 36 assertions) and a 500-cycle load/invoke/close
-run of `iree_leak_harness` with the archive bound and its output values asserted. Zero faults
-*plus* correct output makes this a positive confirmation that the retain is **load-bearing, not
-defensive** — not an artifact of data already being resident.
+Result: zero faults under ASan across `iree_params_test` (9 cases, 36 assertions) and a
+500-cycle load/invoke/close run of `iree_leak_harness` with the archive bound. The golden output
+(`0,0,0,0` — input × the zeroed archive) is checked in both, but zero is the weakest possible
+golden value: a read that silently returned a zeroed buffer (e.g. from freed/unmapped memory the
+allocator happened to zero-fill) is indistinguishable from a correct read of this fixture. The
+golden check is therefore not the load-bearing evidence here. What makes this a positive
+confirmation that the retain is **load-bearing, not defensive** is the *absence of the
+use-after-free ASan would have reported* had the index's retain not fired and the subsequent
+`pread` operated on a freed `iree_io_file_handle_t` and closed fd — a clean ASan run under a
+scenario constructed specifically to trigger that fault is the evidence, not the output value.
 
 ---
 
@@ -245,13 +251,13 @@ wrong.**
 
 - IREE `mmap`s the archive **transiently, only to parse the index**.
   `iree_io_parse_irpa_index` calls `iree_io_file_map_view(..., IREE_HOST_SIZE_MAX, ...)`
-  (`irpa_parser.c:330`), which reaches a real `mmap(..., MAP_SHARED, fd, offset)`
-  (`io/file_handle.c:731`). That mapping is unmapped as soon as the index is built
+  (`irpa_parser.c:334`), which reaches a real `mmap(..., MAP_SHARED, fd, offset)`
+  (`io/file_handle.c:708`). That mapping is unmapped as soon as the index is built
   (`irpa_parser.c:342`). This is also why the Q9 zero-byte error says "failed to **map** file
   handle range" — a real `mmap(2)` failing, not a metaphor.
-- The index stores only `{file handle, offset}` per entry (`irpa_parser.c:125`) — no bytes.
+- The index stores only `{file handle, offset}` per entry (`irpa_parser.c:139-151`) — no bytes.
 - Parameter bytes are fetched later, span by span, by **`pread(2)`** on the retained fd into
-  HAL buffers (`hal/utils/fd_file.c:442`).
+  HAL buffers (`hal/utils/fd_file.c:311`).
 
 So there is **no persistent mapping**, and there **is** a copy into the target buffer on each
 read.
@@ -325,9 +331,9 @@ byte-marshalling than a mmap claim that turns out not to hold.
 
 ### The lever, if archive read cost ever matters
 
-`iree_io_file_handle_preload` (`io/file_handle.h:216`) yields a `HOST_ALLOCATION`-backed handle
+`iree_io_file_handle_preload` (`io/file_handle.h:217`) yields a `HOST_ALLOCATION`-backed handle
 that routes through `iree_hal_memory_file_wrap` and unlocks the genuine zero-copy
-`iree_hal_allocator_import_buffer` path (`parameter_index_provider.c:741-763`). Not exercised
+`iree_hal_allocator_import_buffer` path (`parameter_index_provider.c:739-762`). Not exercised
 here. Noted for whoever picks this up if the `pread` cost at model-load time becomes a concern
 — a one-off per session `Load` for `util.global`-bound parameters like this fixture's, per the
 timing note above.
@@ -349,6 +355,7 @@ ASan/LeakSanitizer, with zero leaked `iree_status_t` objects.
 | Zero-byte archive (the `touch` bypass case) | `...INVALID_ARGUMENT; failed to map file handle range 0-18446744073709551615 (18446744073709551615 bytes) from file of 0 total bytes` | **Yes, with effort** — "file of 0 total bytes" is the load-bearing phrase, but it is preceded by IREE's internal `SIZE_MAX` "whole file" sentinel leaking into the message, which reads as corruption rather than emptiness to an unfamiliar operator. The worst of the four. |
 | Truncated archive (8-byte garbage header) | `...INVALID_ARGUMENT; not enough bytes for a valid IRPA header; file may be empty or truncated` | **Yes, cleanly** — names the format, the defect, and the likely causes. The best of the four. |
 | Wrong scope name (valid archive bound under an unreferenced scope) | `...NOT_FOUND; no provider registered that handles scopes like 'model'; while invoking native function io_parameters.load; ...` | **Yes** — names the specific missing scope. |
+| Unsupported file extension (path does not end in `.irpa`/`.gguf`/`.safetensors`) — not probed by this spike's fixtures, but a real API contract: `iree_io_parse_file_index` (`io/formats/parser_registry.c`) dispatches purely on the path's extension | `...UNIMPLEMENTED; unsupported file format '<ext>'; ensure the extension matches one of the supported formats: [.irpa, .gguf, .safetensors]` | **Yes** — names the bad extension and the supported set. Relevant to the manifest: a caller-supplied relative path with any other extension (e.g. `weights.bin`) is a fifth reachable failure mode. |
 
 **Bottom line for the manifest:** the existence-only check is safe from a crash standpoint. The
 worst a caller can do by `touch`-bypassing it is trade a manifest-level error for an equally
@@ -401,19 +408,19 @@ supposed to move it.
 ## Deferred minors
 
 Collected from the SDD ledger across all tasks so they are triageable rather than lost.
-**None were fixed by this spike; none block production IRPA.** Ordered by rough severity.
+**None block production IRPA; a few have since been fixed in the fix-wave pass over this
+document — noted per row.** Ordered by rough severity.
 
 | # | Task | Item | Note |
 |---|---|---|---|
-| 1 | 6 | `TempFileGuard`'s destructor uses the throwing `std::filesystem::remove` overload during unwind → `std::terminate` risk if removal fails. Use the `error_code` overload. | Low probability, nasty failure mode. Highest-value item here. |
-| 2 | 3 | `emplace_back` can throw before `unique_ptr` adoption completes in the three parameter state vectors → `reserve()` them. | Unreachable in practice, but a real production fix. |
+| 1 | 6 | `TempFileGuard`'s destructor uses the throwing `std::filesystem::remove` overload during unwind → `std::terminate` risk if removal fails. Use the `error_code` overload. | Fixed: switched to the `error_code` overload. |
 | 3 | 7 | `ParamCycle` in the leak harness hardcodes the zeroed-fixture expectation, so the parameter path is single-fixture. | Also relevant: the harness hardcodes `kEntryPoint` assuming `module.add`. |
-| 4 | 4 | The two-scope test omits the shape / byte-length `REQUIRE`s its sibling golden-vector test has. | Test-rigor gap, not a correctness gap. |
-| 5 | 1 | `tools/export_scale.sh` lacks the PATH fallback for tools that `export_add.sh` has. | Inherited from the brief. |
-| 6 | 1 | `tools/export_scale.sh` does not embed the oracle/dump verification the way `export_add.sh` embeds `iree-dump-module`. | Inherited from the brief. |
+| 4 | 4 | The two-scope test omits the shape / byte-length `REQUIRE`s its sibling golden-vector test has. | Fixed: added the same `shape`/byte-length `REQUIRE`s. |
+| 5 | 1 | `tools/export_scale.sh` lacks the PATH fallback for tools that `export_add.sh` has. | Inherited from the brief. Deliberately left. |
+| 6 | 1 | `tools/export_scale.sh` does not embed the oracle/dump verification the way `export_add.sh` embeds `iree-dump-module`. | Inherited from the brief. Deliberately left. |
 | 7 | 3 | `IREE_DJL_SCALE_IRPA_ZERO` was defined but unused at the time; the zeroed archive is the ideal anti-vacuity control for the golden vector. | Substantially addressed by Task 7, which put the zeroed fixture to work. Verify and close. |
-| 8 | 5 | The `RuntimeState` comment is long for a struct that no longer holds the parameter members. | Cosmetic. |
-| 9 | 7 | IREE line numbers cited throughout this document were read from a slightly drifted checkout — off by a few lines versus the pinned 3.11.0. | All resolve to the correct block. Re-anchor if this document is ever used as a precise source reference. |
+| 8 | 5 | The `RuntimeState` comment is long for a struct that no longer holds the parameter members. | Fixed: trimmed to the mechanism plus a one-line maintainer rule. |
+| 9 | 7 | IREE line numbers cited throughout this document were read from a slightly drifted checkout. | Not "a few lines": most citations are exact or off by 1-2, but `fd_file.c` citations are off by 98-131 lines. See the per-citation deltas noted where line numbers are used in this document; re-anchor to the pinned `e4a3b0405d` if this document is used as a precise source reference. |
 | 10 | 9 (Q9) | The zero-byte archive's error message leaks IREE's internal `SIZE_MAX` sentinel before the load-bearing "0 total bytes". | Candidate for a friendlier wrapper on the documented `touch`-bypass path. |
 
 ---

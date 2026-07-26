@@ -124,6 +124,9 @@ TEST_CASE("two archives bound to two scopes", "[params]") {
   auto outputs = runtime->Invoke(inputs);
 
   REQUIRE(outputs.size() == 1);
+  REQUIRE(outputs[0].shape == std::vector<int64_t>{4});
+  REQUIRE(outputs[0].data.size() == 4 * sizeof(float));
+
   std::vector<float> got(4);
   std::memcpy(got.data(), outputs[0].data.data(), outputs[0].data.size());
   // input * 2 (model::weight splat) + 10 (bias::offset splat)
@@ -164,7 +167,10 @@ class TempFileGuard {
     if (len > 0) out.write(data, static_cast<std::streamsize>(len));
     out.close();
   }
-  ~TempFileGuard() { std::filesystem::remove(path_); }
+  ~TempFileGuard() {
+    std::error_code ec;
+    std::filesystem::remove(path_, ec);  // noexcept overload: unwind must not throw
+  }
 
   TempFileGuard(const TempFileGuard&) = delete;
   TempFileGuard& operator=(const TempFileGuard&) = delete;

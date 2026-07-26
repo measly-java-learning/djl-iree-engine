@@ -28,15 +28,22 @@ cmake -B native/qa -S native -G "Unix Makefiles" -DIREE_DJL_SANITIZE=ON \
   -DCMAKE_BUILD_TYPE=Debug \
   -DCMAKE_CXX_FLAGS="-fsanitize=address -fno-omit-frame-pointer -g" \
   -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address"
-cmake --build native/qa --target iree_runtime_test iree_leak_harness -j"${JOBS}"
+cmake --build native/qa --target iree_runtime_test iree_params_test iree_leak_harness -j"${JOBS}"
 
 echo "--- Catch2 unit suite ---"
 ./native/qa/iree_runtime_test
+
+echo "--- Catch2 parameter suite ---"
+./native/qa/iree_params_test
 
 echo "--- ASan/LSan leak harness (${ITERS} iterations, local-sync) ---"
 ./native/qa/iree_leak_harness src/test/resources/models/add.vmfb "${ITERS}"
 
 echo "--- ASan/LSan leak harness (${ITERS} iterations, local-task worker pool) ---"
 ./native/qa/iree_leak_harness src/test/resources/models/add.vmfb "${ITERS}" local-task
+
+echo "--- ASan/LSan leak harness (${ITERS} iterations, parameter-bound, local-sync) ---"
+./native/qa/iree_leak_harness src/test/resources/models/scale.vmfb "${ITERS}" local-sync \
+  model=src/test/resources/models/scale_weights_zero.irpa
 
 echo "--- native QA PASS ---"

@@ -42,6 +42,13 @@ done
 
 # Zeroed: real on-disk storage. Used by the mmap check, which needs actual
 # mapped bytes -- a splat archive has nothing to map.
+#
+# MUST stay --data= (FILE-backed entry, type 0x02), never --splat= (SPLAT entry,
+# type 0x01, no on-disk storage): iree_params_test's FILE-backed test and the
+# leak harness's parameter cycle both depend on this fixture taking the FILE
+# branch in iree_io_parameter_index_add. A splat here would make those checks
+# pass vacuously -- see docs/2026-07-25-irpa-spike-findings.md's FILE-backed
+# differential section.
 "${IREE_CREATE_PARAMS}" --data=weight=4xf32 \
   --output="${out_dir}/scale_weights_zero.irpa"
 

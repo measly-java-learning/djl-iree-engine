@@ -134,12 +134,14 @@ void ImportEscapeCheck(const std::vector<std::byte>& vmfb, const char* driver) {
 //
 // The golden check below assumes the caller passes the zeroed fixture
 // (scale_weights_zero.irpa, per the documented invocation): input * 0 = all
-// zeros. This is deliberate, not incidental -- asserting real values (not
-// just outputs.size()) makes this cycle a second witness for the file-handle
-// differential in iree_params_test: a silently-wrong parameter binding (e.g.
-// the archive read returning garbage or stale data because the retain did
-// not actually keep the handle/fd alive) would otherwise pass hundreds of
-// cycles undetected.
+// zeros. Note zero is a weak golden value -- it cannot distinguish a correct
+// read from a read that landed on already-zeroed (e.g. freed/unmapped) memory,
+// so this check alone does not prove the retain is load-bearing. What this
+// cycle actually witnesses, run under ASan/LSan, is the *absence* of a
+// use-after-free: if the retain did not actually keep the handle/fd alive,
+// the later pread() would touch freed memory and a closed fd, which ASan
+// reports. See the FILE-backed differential in
+// docs/2026-07-25-irpa-spike-findings.md for the full argument.
 void ParamCycle(const std::vector<std::byte>& vmfb, const char* driver,
                  std::span<const ParameterScope> params) {
   auto runtime = IreeRuntime::Load(vmfb, kScaleEntryPoint, driver, params);

@@ -37,7 +37,9 @@ Feasible, and a materially **easier** target than ExecuTorch. Nothing in
 
 Recommended design: a **two-layer facade** — an `extern "C"` boundary with a C++ implementation,
 with JNI and Panama as peers on that boundary. Best done **before IRPA lands**, so the load
-surface is designed once rather than retrofitted.
+surface is designed once rather than retrofitted — though see the *Knock-on* paragraph in
+"~~IRPA is what makes direct binding indefensible~~ — WITHDRAWN 2026-07-25" below: IRPA turned
+out small enough that this sequencing argument is weaker than it reads here.
 
 ## Why IREE is the easier target
 

@@ -183,7 +183,9 @@ tested code.
   and may use more than one archive; the manifest carries the scope→file map explicitly, so
   there is no filename-guessing convention to design. Still grows load options beyond
   `entryPoint`/`device`.
-- **Filesystem vs classpath:** mmap needs a real path. On-disk models work directly.
+- **Filesystem vs classpath:** IREE needs a real path it can `open()` and `pread()`
+  selectively (see Q8 — no persistent mmap, but no in-memory byte marshalling either). On-disk
+  models work directly.
   Jar-bundled models still need extract-to-temp — but **that is now the caller's job, not
   ours** (Part 3): they hand us a manifest path on a real filesystem or they do not get to
   load.
@@ -251,6 +253,13 @@ That independence is the invariant to bake in.
 the manifest names — `.vmfb`(s), `.irpa`(s) — is located at a path **relative to the
 manifest document itself**. The manifest *describes*; it never *contains*.
 
+**API constraint the manifest inherits:** `iree_io_parse_file_index` dispatches on the
+asset's path **extension alone** (`io/formats/parser_registry.c`) and throws
+`UNIMPLEMENTED; unsupported file format ...` for anything other than `.irpa`/`.gguf`/
+`.safetensors`. Since the manifest lets a caller name arbitrary relative paths, a
+mis-suffixed parameter asset (e.g. `weights.bin`) is a real, reachable failure mode, not a
+hypothetical — see the Q9 error table in the findings doc.
+
 **Archives are explicitly unsupported, and we say so.** If a user wants to ship the vmfb,
 the manifest, and the IRPA files as a zip/tar/whatever, they are required to unarchive it —
 in Java or anything else — **before** calling into the DJL IREE engine. We do not accept an
@@ -310,7 +319,9 @@ that layer, which means predictable failures and no hidden accommodation.
   model-dir layout — cheap, standalone, independent of IRPA.
 - If **IRPA** is the priority: build it first, but make its artifact-layout/discovery
   decision hwcaps-aware (pluggable vmfb-resolution seam) and steer packaging to a
-  directory convention so mmap survives.
+  directory convention so IREE can `open()` the archive directly, rather than one that
+  needs an extract-to-temp step first (see Q8 — no persistent mmap, but IREE still needs a
+  real fd).
 - The thing worth doing **once**: a single "model artifact layout" spec covering both —
   tiered vmfbs selected by CPU + scope-keyed hardware-agnostic params (shared), loose
   files, **manifest-pointed** (contract decided; see Part 3). That spec also settles the
@@ -563,11 +574,11 @@ Still open:
   - **No size or content check, and this is load-bearing.** A zero-byte file **passes**. That
     is deliberate: the user can `touch` a placeholder for an asset they know will never be
     loaded — e.g. the generic-CPU `.vmfb` tier on a host known to be hwcap v4. The asset is
-    never mmap'd, so its emptiness never matters.
+    never opened, so its emptiness never matters.
 
     **Do not "improve" this by adding a non-zero-size check.** It would break the documented
-    bypass. If a file *is* genuinely truncated and *is* genuinely loaded, IREE's own mmap or
-    IRPA parse failure is the error — deferring to it is the intended behaviour, not a gap.
+    bypass. If a file *is* genuinely truncated and *is* genuinely loaded, IREE's own file-open
+    or IRPA parse failure is the error — deferring to it is the intended behaviour, not a gap.
   - **All listed assets are checked eagerly**, not just the tier that selection ends up
     choosing. Eager is cheap and predictable, gives one clear error for the whole artifact at
     load time, and the `touch` bypass covers the "I know I'll never use that tier" case
