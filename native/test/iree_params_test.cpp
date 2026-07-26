@@ -29,6 +29,7 @@ std::vector<std::byte> ReadFile(const char* path) {
 // Set by CMake; see native/CMakeLists.txt.
 constexpr const char* kScaleVmfb = IREE_DJL_SCALE_VMFB;
 constexpr const char* kScaleIrpa = IREE_DJL_SCALE_IRPA;
+constexpr const char* kScaleIrpaZero = IREE_DJL_SCALE_IRPA_ZERO;
 constexpr const char* kEntryPoint = "module.scale";
 constexpr const char* kScale2Vmfb = IREE_DJL_SCALE2_VMFB;
 constexpr const char* kScale2BiasIrpa = IREE_DJL_SCALE2_BIAS_IRPA;
@@ -66,6 +67,39 @@ TEST_CASE("golden vector: parameter-backed scale", "[params]") {
   // The archive is a splat of 2.0, so the program computes input * 2.
   // Matches the iree-run-module oracle: 4xf32=1,2,3,4 -> 2 4 6 8.
   const std::vector<float> want = {2.0f, 4.0f, 6.0f, 8.0f};
+  for (size_t i = 0; i < want.size(); ++i) {
+    REQUIRE(std::fabs(got[i] - want[i]) < 1e-6f);
+  }
+}
+
+TEST_CASE("golden vector: FILE-backed (zeroed) archive", "[params]") {
+  // Unlike kScaleIrpa (a SPLAT archive with no on-disk storage), this fixture
+  // is FILE-backed: real bytes on disk, all zero. Loading it is what makes
+  // iree_io_parameter_index_add take the FILE branch (parameter_index.c:185)
+  // for the first time in this suite -- see Task 7 / the file-handle row of
+  // the ownership table in docs/2026-07-25-irpa-spike-findings.md.
+  auto bytes = ReadFile(kScaleVmfb);
+  const ParameterScope scopes[] = {{"model", kScaleIrpaZero}};
+  auto runtime = IreeRuntime::Load(bytes, kEntryPoint, "local-sync", scopes);
+
+  const std::vector<float> input = {1.0f, 2.0f, 3.0f, 4.0f};
+  InputDesc desc;
+  desc.data = input.data();
+  desc.nbytes = input.size() * sizeof(float);
+  desc.shape = {4};
+  desc.elementType = kF32;
+
+  const InputDesc inputs[] = {desc};
+  auto outputs = runtime->Invoke(inputs);
+
+  REQUIRE(outputs.size() == 1);
+  REQUIRE(outputs[0].shape == std::vector<int64_t>{4});
+  REQUIRE(outputs[0].data.size() == 4 * sizeof(float));
+
+  std::vector<float> got(4);
+  std::memcpy(got.data(), outputs[0].data.data(), outputs[0].data.size());
+  // The archive is zeroed, so the program computes input * 0.
+  const std::vector<float> want = {0.0f, 0.0f, 0.0f, 0.0f};
   for (size_t i = 0; i < want.size(); ++i) {
     REQUIRE(std::fabs(got[i] - want[i]) < 1e-6f);
   }

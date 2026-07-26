@@ -14,17 +14,17 @@ construction time. `RuntimeState` only needs `session` (everything param-related
 a local in `IreeRuntime::Load`, scoped to release right after each handle is handed to
 the next level up).
 
-Three of the four levels (module, provider, index) are verified both empirically —
-deliberately dropping the `RuntimeState` reference and confirming `iree_params_test`
-still passed clean under ASan/LeakSanitizer (4 test cases, 18 assertions each run) — and
-by reading the retain call site in the IREE source. The fourth (file handle) is verified
-by source reading only: `iree_params_test`'s fixtures are splat archives, so the drop
-never exercised the code path that would prove it empirically. See the table's first
-row and Task 7 for the pending FILE-backed test.
+All four levels (module, provider, index, and now file handle) are verified both
+empirically — deliberately dropping the `RuntimeState` reference (or, for the file
+handle, an explicit local drop) and confirming `iree_params_test` still passed clean
+under ASan/LeakSanitizer — and by reading the retain call site in the IREE source. The
+file handle needed a FILE-backed fixture to exercise the retain path at all;
+Task 5's probe against the suite's splat-only fixtures never took that branch, so the row
+was marked provisional until Task 7 added one.
 
 | Handle type | Retained by whom | Must we hold it in `RuntimeState`? | Failure mode when not held |
 |---|---|---|---|
-| File handle (`iree_io_file_handle_t`) — **provisional, pending Task 7** | The parameter index — `iree_io_parameter_index_add` calls `iree_io_file_handle_retain` for every FILE-backed entry (`io/parameter_index.c:185`) | No, per source reading | Not exercised by `iree_params_test`: both fixtures it binds (`IREE_DJL_SCALE_IRPA`, `IREE_DJL_SCALE2_BIAS_IRPA`) are splat archives with no on-disk storage (see `tools/export_scale.sh`), so `iree_io_parameter_index_add` takes the SPLAT branch and the FILE-branch retain at `parameter_index.c:185` never runs. The drop therefore passed clean under ASan, but for the uninteresting reason that nothing referenced the handle to begin with, not because a retain saved it. The mmap-outliving-lazy-reads prediction was *untested*, not disproven — `IREE_DJL_SCALE_IRPA_ZERO` is the one FILE-backed fixture in the tree and is currently referenced by no test. Task 7 owns the FILE-backed differential (load with the zeroed archive, invoke, then re-apply the Probe-5 drop and confirm it now use-after-frees). |
+| File handle (`iree_io_file_handle_t`) — **verified empirically by Task 7** | The parameter index — `iree_io_parameter_index_add` calls `iree_io_file_handle_retain` for every FILE-backed entry (`io/parameter_index.c:185`) | No | Task 5's drop was inert: both fixtures it binds (`IREE_DJL_SCALE_IRPA`, `IREE_DJL_SCALE2_BIAS_IRPA`) are splat archives with no on-disk storage (see `tools/export_scale.sh`), so `iree_io_parameter_index_add` took the SPLAT branch and the FILE-branch retain at `parameter_index.c:185` never ran. Task 7 added a FILE-backed fixture (`scale_weights_zero.irpa`) and a golden-vector test case that loads it, then re-applied the drop — releasing the local file handle immediately after `iree_io_parse_file_index` returns, forcing its refcount down rather than relying on scope-exit timing. Result: **zero faults under ASan, correct golden output (`0,0,0,0`, input × the zeroed archive)**, across the full `iree_params_test` suite (9 cases, 36 assertions) and a 500-cycle repeated load/invoke/close run of `iree_leak_harness` with the archive bound. This empirically confirms the retain: the index keeps the file handle alive via its own reference regardless of what the caller does with its local one. |
 | Parameter index (`iree_io_parameter_index_t`) | The index provider — `iree_io_parameter_index_provider_create` calls `iree_io_parameter_index_retain` (`io/parameter_index_provider.c:64`) | No | None observed. PASS, clean under ASan. |
 | Parameter provider (`iree_io_parameter_provider_t`) | The io_parameters module — `iree_io_parameters_module_create` calls `iree_io_parameter_provider_retain` per provider (`modules/io/parameters/module.c:518`) | No | None observed. PASS, clean under ASan. |
 | io_parameters module (`iree_vm_module_t`) | The session/context — appending a module calls `iree_vm_module_retain` (`vm/context.c:444`/`597`), matching the documented claim at `session.h:143` | No | None observed. PASS, clean under ASan. |
@@ -33,10 +33,10 @@ Method: for each level, the `RuntimeState`-owned handle was replaced with a loca
 object that releases at the end of the scope in which it's last needed (e.g. the file
 handle releases right after `iree_io_parse_file_index` returns), then
 `native/asan/iree_params_test` was rebuilt and run. Each successful drop was kept before
-probing the next level down, so the four results compound: the final `RuntimeState` has
-all four members removed simultaneously, and both `iree_params_test` (4 cases, 18
-assertions) and `iree_runtime_test` (11 cases, 36 assertions) pass with zero
-LeakSanitizer reports.
+probing the next level down, so the results compound: the final `RuntimeState` has all
+four members removed simultaneously, and both `iree_params_test` (9 cases, 36 assertions,
+after Task 7's FILE-backed addition) and `iree_runtime_test` (11 cases, 36 assertions)
+pass with zero LeakSanitizer reports.
 
 This was cross-checked against the IREE source (checkout at `~/workspace/iree`), not
 just inferred from the ASan result — each `_retain()` call site above was read directly,
@@ -89,3 +89,73 @@ Full messages, ASan results, and build-environment notes are in
 for the manifest go/no-go: the existence-only check is safe from a crash standpoint; the
 zero-byte message is the one candidate for a friendlier wrapper if this ships, but is not
 a blocker on its own.
+
+## mmap (Q8)
+
+Q8 asked whether IREE genuinely `mmap`s an IRPA parameter archive, or reads it into host
+memory. This matters because the planned model-manifest format passes archives **by
+path, not by bytes**, and "IREE mmaps the file" is the stated justification for that
+choice.
+
+**Answer: NOT MAPPED.** `iree_leak_harness` was extended to accept an optional 4th argv,
+`scope=path`, threaded through to the 4-argument `IreeRuntime::Load`. Run against
+`scale.vmfb` (single import, scope `"model"`) bound to the FILE-backed
+`scale_weights_zero.irpa` fixture (the splat fixtures have no on-disk storage and cannot
+answer this question at all — they're pure generated values, nothing to map), with
+2,000,000 requested iterations so the process would still be running a second later:
+
+```
+$ ./native/build/iree_leak_harness src/test/resources/models/scale.vmfb 2000000 local-sync \
+    "model=$(pwd)/src/test/resources/models/scale_weights_zero.irpa" &
+HARNESS_PID=$!
+sleep 1
+ps -p $HARNESS_PID -o pid,stat,etimes,cmd   # confirmed alive (STAT=R, ETIMES=1)
+grep -c "scale_weights_zero.irpa" /proc/$HARNESS_PID/maps || echo "NOT MAPPED"
+```
+
+```
+0
+NOT MAPPED
+```
+
+The full `/proc/<pid>/maps` for the (confirmed-alive) process is 40 lines: the harness
+binary itself, libc/libstdc++/libgcc_s/libm/ld-linux, `[heap]`, `[stack]`, `[vdso]`,
+`[vvar]`, `[vvar_vclock]`, `[vsyscall]`. No mapping references the archive path or any
+anonymous region large enough to be a whole-file mapping of it — the archive is a few KB,
+so it would not be lost among the 40 lines if present. `iree_io_file_handle_open` was
+called with `IREE_IO_FILE_MODE_RANDOM_ACCESS` (the mode the code comments describe as
+"mmap-friendly"), and the harness's parameter cycle (`ParamCycle`, `native/harness/iree_leak_harness.cpp`)
+both loads the archive and invokes the model against it repeatedly, so the check is not
+catching IREE before it has touched the file.
+
+**Conclusion: for this build (linux-x86_64, `local-sync` driver, RANDOM_ACCESS file
+mode), IREE reads the IRPA archive into host memory rather than mapping it into the
+process's address space.** "Mmap-friendly" describes the *file handle mode* IREE
+supports, not a guarantee that this platform/driver combination actually uses `mmap(2)`
+for it. The path-based manifest contract itself is unaffected — passing a path instead of
+bytes is still the right shape, and the go/no-go from Task 6 stands — but **its rationale
+needs rewording**: it should not claim "so the OS mmaps it and we avoid a copy." It should
+instead say the contract avoids requiring the caller to read the file into a byte buffer
+before calling — IREE owns the read (or map, where it does map) itself. Whether a
+mapping-backed path exists for other drivers/OSes was out of scope for this differential
+and was not tested.
+
+## FILE-backed differential (Task 7)
+
+Recorded above in the ownership-chain table's file-handle row: dropping the local file
+handle immediately after `iree_io_parse_file_index` returns, against the FILE-backed
+zeroed archive, produced **zero faults** under ASan and the correct golden output. This
+was the opposite of the naive expectation going in (a UAF, on the theory that a live
+mapping needing to outlive the drop would break if nothing retained the handle) — but it
+is fully consistent with, and confirms, the source-verified retain at
+`parameter_index.c:185`: the index takes its own reference when the FILE-backed entry is
+added, so the caller's local handle going out of scope (or being explicitly reset) has no
+effect on the archive's continued availability. Combined with the "NOT MAPPED" result
+above, the likely mechanism is that the archive's bytes are read directly by whatever
+holds the retained handle (the index/the format parser), not lazily faulted in from a
+live mapping — which is also why dropping the caller's own reference was always going to
+be safe once the retain was confirmed to fire.
+
+A repeated-cycle run (`iree_leak_harness`, 500 load/invoke/close cycles, `local-sync`,
+zeroed archive bound) under ASan/LeakSanitizer also came back clean — the strongest single
+signal for the parameter chain's lifetime correctness under real, repeated use.
