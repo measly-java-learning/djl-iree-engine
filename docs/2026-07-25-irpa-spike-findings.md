@@ -24,7 +24,7 @@ was marked provisional until Task 7 added one.
 
 | Handle type | Retained by whom | Must we hold it in `RuntimeState`? | Failure mode when not held |
 |---|---|---|---|
-| File handle (`iree_io_file_handle_t`) — **verified empirically by Task 7** | The parameter index — `iree_io_parameter_index_add` calls `iree_io_file_handle_retain` for every FILE-backed entry (`io/parameter_index.c:185`) | No | Task 5's drop was inert: both fixtures it binds (`IREE_DJL_SCALE_IRPA`, `IREE_DJL_SCALE2_BIAS_IRPA`) are splat archives with no on-disk storage (see `tools/export_scale.sh`), so `iree_io_parameter_index_add` took the SPLAT branch and the FILE-branch retain at `parameter_index.c:185` never ran. Task 7 added a FILE-backed fixture (`scale_weights_zero.irpa`) and a golden-vector test case that loads it, then re-applied the drop — releasing the local file handle immediately after `iree_io_parse_file_index` returns, forcing its refcount down rather than relying on scope-exit timing. Result: **zero faults under ASan, correct golden output (`0,0,0,0`, input × the zeroed archive)**, across the full `iree_params_test` suite (9 cases, 36 assertions) and a 500-cycle repeated load/invoke/close run of `iree_leak_harness` with the archive bound. This empirically confirms the retain: the index keeps the file handle alive via its own reference regardless of what the caller does with its local one. |
+| File handle (`iree_io_file_handle_t`) — **verified empirically by Task 7, load-bearing** | The parameter index — `iree_io_parameter_index_add` calls `iree_io_file_handle_retain` for every FILE-backed entry (`io/parameter_index.c:185`) | No | Task 5's drop was inert: both fixtures it binds (`IREE_DJL_SCALE_IRPA`, `IREE_DJL_SCALE2_BIAS_IRPA`) are splat archives with no on-disk storage (see `tools/export_scale.sh`), so `iree_io_parameter_index_add` took the SPLAT branch and the FILE-branch retain at `parameter_index.c:185` never ran. Task 7 added a FILE-backed fixture (`scale_weights_zero.irpa`) and a golden-vector test case that loads it, then re-applied the drop — releasing the local file handle immediately after `iree_io_parse_file_index` returns, forcing its refcount down rather than relying on scope-exit timing. The index stores only `{handle, offset}` at parse time (`irpa_parser.c:125`), so parameter bytes are not read until `io_parameters.load`, later, through the index's own retained handle (`parameter_index_provider.c:149`, `hal/utils/fd_file.c:442` `pread`). Result: **zero faults under ASan, correct golden output (`0,0,0,0`, input × the zeroed archive)** on that subsequent real read, across the full `iree_params_test` suite (9 cases, 36 assertions) and a 500-cycle repeated load/invoke/close run of `iree_leak_harness` with the archive bound and its output values asserted. Since the read genuinely happens after the drop, and through the index's reference rather than ours, this is a positive confirmation that the retain is load-bearing — not just an absence-of-leak result. |
 | Parameter index (`iree_io_parameter_index_t`) | The index provider — `iree_io_parameter_index_provider_create` calls `iree_io_parameter_index_retain` (`io/parameter_index_provider.c:64`) | No | None observed. PASS, clean under ASan. |
 | Parameter provider (`iree_io_parameter_provider_t`) | The io_parameters module — `iree_io_parameters_module_create` calls `iree_io_parameter_provider_retain` per provider (`modules/io/parameters/module.c:518`) | No | None observed. PASS, clean under ASan. |
 | io_parameters module (`iree_vm_module_t`) | The session/context — appending a module calls `iree_vm_module_retain` (`vm/context.c:444`/`597`), matching the documented claim at `session.h:143` | No | None observed. PASS, clean under ASan. |
@@ -97,64 +97,100 @@ memory. This matters because the planned model-manifest format passes archives *
 path, not by bytes**, and "IREE mmaps the file" is the stated justification for that
 choice.
 
-**Answer: NOT MAPPED.** `iree_leak_harness` was extended to accept an optional 4th argv,
-`scope=path`, threaded through to the 4-argument `IreeRuntime::Load`. Run against
-`scale.vmfb` (single import, scope `"model"`) bound to the FILE-backed
+**Answer: both, at different times, for different purposes.** IREE `mmap`s the archive
+**transiently**, only to parse the index: `iree_io_parse_irpa_index` calls
+`iree_io_file_map_view(..., IREE_HOST_SIZE_MAX, ...)` (`irpa_parser.c:330`), which goes
+through `iree_io_platform_map_file_view` to a real `mmap(..., MAP_SHARED, fd, offset)`
+(`io/file_handle.c:731`) — and this is exactly why Task 6's zero-byte-archive error
+message says "failed to **map** file handle range 0-18446744073709551615": the failure
+is a real `mmap(2)` failing, not a metaphor. That mapping is unmapped again as soon as
+the index is built (`irpa_parser.c:342`). The index itself stores only `{file handle,
+offset}` per entry (`irpa_parser.c:125`) — no parameter bytes. Those bytes are fetched
+later, at `io_parameters.load` time (i.e. per `Invoke`, not once at `Load`), span-by-span,
+via `pread(2)` on the retained fd into HAL buffers (`hal/utils/fd_file.c:442`).
+
+So there is **no persistent mapping** of the archive, and there **is** a copy into the
+target buffer on every read. `iree_leak_harness` was extended to accept an optional 4th
+argv, `scope=path`, threaded through to the 4-argument `IreeRuntime::Load`, and run
+against `scale.vmfb` (single import, scope `"model"`) bound to the FILE-backed
 `scale_weights_zero.irpa` fixture (the splat fixtures have no on-disk storage and cannot
-answer this question at all — they're pure generated values, nothing to map), with
-2,000,000 requested iterations so the process would still be running a second later:
+answer this question at all), with 2,000,000 requested iterations so the process would
+still be mid-run — actively looping `Load`/`Invoke`/close, i.e. actively re-parsing and
+re-reading the archive — a second later:
 
 ```
 $ ./native/build/iree_leak_harness src/test/resources/models/scale.vmfb 2000000 local-sync \
     "model=$(pwd)/src/test/resources/models/scale_weights_zero.irpa" &
 HARNESS_PID=$!
 sleep 1
-ps -p $HARNESS_PID -o pid,stat,etimes,cmd   # confirmed alive (STAT=R, ETIMES=1)
-grep -c "scale_weights_zero.irpa" /proc/$HARNESS_PID/maps || echo "NOT MAPPED"
+ps -p $HARNESS_PID -o pid,stat,etimes,cmd
+grep -c "scale_weights_zero.irpa" /proc/$HARNESS_PID/maps || echo "NOT MAPPED (grep found 0 matches)"
+wc -l /proc/$HARNESS_PID/maps
 ```
 
+Actual output:
+
 ```
+    PID STAT ELAPSED CMD
+3095117 R          1 ./native/build/iree_leak_harness src/test/resources/models/scale.vmfb 2000000 local-sync model=/home/corey/workspace/djl-iree-engine/src/test/resources/models/scale_weights_zero.irpa
+
 0
-NOT MAPPED
+NOT MAPPED (grep found 0 matches)
+
+40 /proc/3095117/maps
 ```
 
-The full `/proc/<pid>/maps` for the (confirmed-alive) process is 40 lines: the harness
-binary itself, libc/libstdc++/libgcc_s/libm/ld-linux, `[heap]`, `[stack]`, `[vdso]`,
-`[vvar]`, `[vvar_vclock]`, `[vsyscall]`. No mapping references the archive path or any
-anonymous region large enough to be a whole-file mapping of it — the archive is a few KB,
-so it would not be lost among the 40 lines if present. `iree_io_file_handle_open` was
-called with `IREE_IO_FILE_MODE_RANDOM_ACCESS` (the mode the code comments describe as
-"mmap-friendly"), and the harness's parameter cycle (`ParamCycle`, `native/harness/iree_leak_harness.cpp`)
-both loads the archive and invokes the model against it repeatedly, so the check is not
-catching IREE before it has touched the file.
+The full 40-line `/proc/<pid>/maps` for the confirmed-alive process (`STAT=R`,
+`ETIMES=1`) is: the harness binary itself (5 segments), libc/libstdc++/libgcc_s/libm/
+ld-linux (5 segments each), `[heap]`, `[stack]`, `[vdso]`, `[vvar]`, `[vvar_vclock]`,
+`[vsyscall]`. No mapping references the archive path, and there is no anonymous region
+large enough to be a whole-file mapping of a several-KB archive that would be lost among
+the other 40 lines. This is a real, useful result, but it can only rule out a
+**persistent** mapping — the parse-window `mmap` above is a microsecond-scale slice of
+each `Load` cycle (map, build index, unmap, all before `Load` returns), so a 1-second
+sample landing between cycles was always the expected outcome whichever way the
+underlying mechanism actually worked, and does not by itself distinguish "never mapped"
+from "mapped and already unmapped again."
 
-**Conclusion: for this build (linux-x86_64, `local-sync` driver, RANDOM_ACCESS file
-mode), IREE reads the IRPA archive into host memory rather than mapping it into the
-process's address space.** "Mmap-friendly" describes the *file handle mode* IREE
-supports, not a guarantee that this platform/driver combination actually uses `mmap(2)`
-for it. The path-based manifest contract itself is unaffected — passing a path instead of
-bytes is still the right shape, and the go/no-go from Task 6 stands — but **its rationale
-needs rewording**: it should not claim "so the OS mmaps it and we avoid a copy." It should
-instead say the contract avoids requiring the caller to read the file into a byte buffer
-before calling — IREE owns the read (or map, where it does map) itself. Whether a
-mapping-backed path exists for other drivers/OSes was out of scope for this differential
-and was not tested.
+**Conclusion for the manifest contract:** the contract still stands — passing a path
+avoids requiring the caller to buffer the archive into memory before calling — but its
+stated rationale needs rewording. Not *"the OS mmaps it so we avoid a copy"* (there is no
+persistent mapping, and there is a copy, at read time). Instead: *IREE owns the file
+descriptor and does positional reads (`pread`) of just the spans a program actually
+imports, so the caller never has to read the whole archive into a byte buffer up front —
+mapping is used only internally and briefly, to build the index of what's in the file.*
+
+One caveat worth recording for later: the negative `/proc/maps` result is method-limited
+by design (see above), and separately, `iree_io_file_handle_preload`
+(`io/file_handle.h:216`) is a documented lever if copy cost ever matters in production —
+it yields a `HOST_ALLOCATION`-backed handle that routes through
+`iree_hal_memory_file_wrap` and unlocks the genuine zero-copy
+`iree_hal_allocator_import_buffer` path (`parameter_index_provider.c:741-763`). Not
+exercised here; noted for whoever picks this up if read-per-invoke `pread` cost becomes a
+concern.
 
 ## FILE-backed differential (Task 7)
 
 Recorded above in the ownership-chain table's file-handle row: dropping the local file
 handle immediately after `iree_io_parse_file_index` returns, against the FILE-backed
-zeroed archive, produced **zero faults** under ASan and the correct golden output. This
-was the opposite of the naive expectation going in (a UAF, on the theory that a live
-mapping needing to outlive the drop would break if nothing retained the handle) — but it
-is fully consistent with, and confirms, the source-verified retain at
-`parameter_index.c:185`: the index takes its own reference when the FILE-backed entry is
-added, so the caller's local handle going out of scope (or being explicitly reset) has no
-effect on the archive's continued availability. Combined with the "NOT MAPPED" result
-above, the likely mechanism is that the archive's bytes are read directly by whatever
-holds the retained handle (the index/the format parser), not lazily faulted in from a
-live mapping — which is also why dropping the caller's own reference was always going to
-be safe once the retain was confirmed to fire.
+zeroed archive, produced **zero faults** under ASan and the correct golden output.
+
+The mechanism, traced through the source: the retain at `parameter_index.c:185` is
+**load-bearing, not defensive**. `iree_io_parse_irpa_v0_data_entry` stores only
+`{handle, offset}` per entry in the index (`irpa_parser.c:125`) — no parameter bytes are
+resident when `iree_io_parse_file_index` returns. Those bytes are fetched later, during
+`io_parameters.load`: `iree_io_parameter_index_provider_resolve` dereferences
+`entry->storage.file.handle` (`parameter_index_provider.c:149`) and imports it as a HAL
+file, which for an FD-backed handle retains it again (`hal/utils/fd_file.c:345`) and then
+`pread`s the requested span (`fd_file.c:442`). Dropping the local reference immediately
+after parse therefore leaves the index holding the *only* reference across a subsequent,
+real, later read of the file. Had the index's retain not actually fired at runtime, that
+later `pread` would be operating on a freed `iree_io_file_handle_t` and (absent some other
+live reference) a closed fd — a genuine use-after-free that ASan/LeakSanitizer would have
+caught. It did not fire an error; it returned the correct `0,0,0,0` golden output. Zero
+faults plus correct output is therefore a real positive result for the retain being both
+present and load-bearing — not an artifact of the data already being resident, and not
+inevitable regardless of whether the retain fired.
 
 A repeated-cycle run (`iree_leak_harness`, 500 load/invoke/close cycles, `local-sync`,
 zeroed archive bound) under ASan/LeakSanitizer also came back clean — the strongest single

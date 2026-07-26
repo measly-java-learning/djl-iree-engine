@@ -42,9 +42,12 @@ struct RuntimeState {
   // splat-only fixtures (nothing to dangle). Task 7 added a FILE-backed case
   // (scale_weights_zero.irpa) and re-ran the drop: dropping the local file
   // handle immediately after iree_io_parse_file_index returns produced zero
-  // faults and the correct golden output, confirming the retain empirically.
-  // Only the file/index/provider/module are scoped locally inside Load's
-  // parameter-loading block now; see there.
+  // faults and the correct golden output on a SUBSEQUENT real pread() of
+  // parameter data through the index's own retained reference to that
+  // handle (parameter_index_provider.c:149, hal/utils/fd_file.c:442) -- a
+  // load-bearing confirmation of the retain, not just an absence-of-leak
+  // result. Only the file/index/provider/module are scoped locally inside
+  // Load's parameter-loading block now; see there.
   SessionPtr session;
   std::vector<IreeRuntime::ImportOutcome> lastImportOutcomes;
 };
@@ -106,16 +109,26 @@ std::unique_ptr<IreeRuntime> IreeRuntime::Load(
     scoped_providers.reserve(parameters.size());
 
     for (const auto& param : parameters) {
-      // 1. Open the archive. RANDOM_ACCESS is the mmap-friendly mode.
+      // 1. Open the archive. RANDOM_ACCESS is the mode used for the pread(2)s
+      //    that later fetch parameter spans (hal/utils/fd_file.c:442) -- IREE
+      //    only mmaps this file transiently, inside iree_io_parse_file_index
+      //    below, to parse the index (irpa_parser.c:330), then unmaps it.
       //    Locally scoped: the parameter index retains the file handle for
       //    every FILE-backed entry it is given (verified by source reading,
-      //    io/parameter_index.c:185, FILE branch, AND empirically under ASan
-      //    by Task 7's FILE-backed differential: dropping this local handle
-      //    immediately after parse, against the FILE-backed
-      //    scale_weights_zero.irpa fixture, produced zero faults and the
-      //    correct golden output -- see iree_params_test.cpp's "golden
-      //    vector: FILE-backed (zeroed) archive" case and
-      //    docs/2026-07-25-irpa-spike-findings.md).
+      //    io/parameter_index.c:185, FILE branch). This retain is
+      //    LOAD-BEARING, not defensive: the index stores only {handle,
+      //    offset} per entry (irpa_parser.c:125), so no parameter bytes are
+      //    resident yet -- they are pread() later, at io_parameters.load
+      //    time, through this same retained handle (parameter_index_provider.c:149,
+      //    fd_file.c:442). Task 7's FILE-backed differential dropped this
+      //    local handle immediately after parse, against the FILE-backed
+      //    scale_weights_zero.irpa fixture, and got zero faults plus the
+      //    correct golden output on a SUBSEQUENT real read through the
+      //    index's retained reference -- a genuine positive result for the
+      //    retain (had it not fired, that later pread would have been a
+      //    use-after-free on a freed handle/closed fd, which ASan would have
+      //    caught). See iree_params_test.cpp's "golden vector: FILE-backed
+      //    (zeroed) archive" case and docs/2026-07-25-irpa-spike-findings.md.
       iree_io_file_handle_t* raw_file = nullptr;
       IREE_CHECK_OR_THROW(iree_io_file_handle_open(
           IREE_IO_FILE_MODE_READ | IREE_IO_FILE_MODE_RANDOM_ACCESS,
@@ -134,7 +147,14 @@ std::unique_ptr<IreeRuntime> IreeRuntime::Load(
           iree_make_string_view(param.path.data(), param.path.size()),
           scoped_file.get(), scoped_index.get(),
           iree_allocator_system()));
-      // scoped_file releases here, right after parse -- before Load returns.
+      // Explicit release right here, not left to scope-exit ordering (which
+      // would actually run at the end of this loop iteration, after step 3,
+      // since scoped_file is declared before scoped_index and destroys in
+      // reverse order). This is the exact timing Task 7's FILE-backed
+      // differential proved safe: the index has already taken its own
+      // reference to the handle inside iree_io_parse_file_index (retain at
+      // parameter_index.c:185), so nothing here needs to outlive this line.
+      scoped_file.reset();
 
       // 3. Wrap in a provider bound to the caller's scope name.
       iree_io_parameter_provider_t* raw_provider = nullptr;

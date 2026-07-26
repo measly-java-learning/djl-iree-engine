@@ -129,9 +129,17 @@ void ImportEscapeCheck(const std::vector<std::byte>& vmfb, const char* driver) {
 // 4-argument Load. This is what exercises the parameter chain's ownership
 // (file handle -> index -> provider -> module) repeatedly under ASan/LSan --
 // see docs/2026-07-25-irpa-spike-findings.md, Task 7. Also what a background
-// long-running invocation of this harness uses to keep an mmap'd archive
-// resident for the /proc/<pid>/maps check (native/local build.sh Step 3 in
-// task-7-brief.md).
+// long-running invocation of this harness uses to keep an archive bound and
+// repeatedly read for the /proc/<pid>/maps check (task-7-brief.md Step 3).
+//
+// The golden check below assumes the caller passes the zeroed fixture
+// (scale_weights_zero.irpa, per the documented invocation): input * 0 = all
+// zeros. This is deliberate, not incidental -- asserting real values (not
+// just outputs.size()) makes this cycle a second witness for the file-handle
+// differential in iree_params_test: a silently-wrong parameter binding (e.g.
+// the archive read returning garbage or stale data because the retain did
+// not actually keep the handle/fd alive) would otherwise pass hundreds of
+// cycles undetected.
 void ParamCycle(const std::vector<std::byte>& vmfb, const char* driver,
                  std::span<const ParameterScope> params) {
   auto runtime = IreeRuntime::Load(vmfb, kScaleEntryPoint, driver, params);
@@ -141,6 +149,20 @@ void ParamCycle(const std::vector<std::byte>& vmfb, const char* driver,
   if (outputs.size() != 1) {
     std::fprintf(stderr, "expected 1 output, got %zu\n", outputs.size());
     std::exit(71);
+  }
+  if (outputs[0].data.size() != 4 * sizeof(float)) {
+    std::fprintf(stderr, "expected 16 bytes, got %zu\n", outputs[0].data.size());
+    std::exit(74);
+  }
+  float got[4];
+  std::memcpy(got, outputs[0].data.data(), sizeof(got));
+  for (int i = 0; i < 4; ++i) {
+    if (got[i] != 0.0f) {
+      std::fprintf(stderr,
+                    "golden mismatch at %d: got %f, want 0.0 (zeroed archive)\n",
+                    i, got[i]);
+      std::exit(75);
+    }
   }
 }
 }  // namespace
