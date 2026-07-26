@@ -63,3 +63,29 @@ Import resolution runs synchronously when a module is registered against whateve
 already in the context — there is no deferred/lazy resolution path that would tolerate
 registering `io_parameters` afterward. The existing code (append parameters module before
 the bytecode module) is therefore not just a stylistic ordering choice; it's required.
+
+## Error behaviour (Q9)
+
+Q9 asked whether a zero-byte `.irpa` — guaranteed reachable by the planned model-manifest
+format, which checks only "does this file exist," and documents a `touch` bypass for
+archives a caller knows will never load — fails as a diagnosable error or crashes.
+
+**Confirmed: none of the four failure modes probed (missing file, zero-byte archive,
+truncated archive, wrong scope name) crash.** All four throw a catchable
+`std::runtime_error` from `IreeRuntime::Load`, in both a plain host build and under
+ASan/LeakSanitizer, with zero leaked `iree_status_t` objects. This directly validates the
+manifest design's existence-only check: the worst a caller can do by `touch`-bypassing the
+check is trade a manifest-level error for an equally catchable exception one call deeper.
+
+| Failure mode | Exact message | Diagnosable from the string alone? |
+|---|---|---|
+| Missing file | `...NOT_FOUND; failed to open file '/nonexistent/nope.irpa'` | Yes — names the missing path directly. |
+| Zero-byte archive (the `touch` bypass case) | `...INVALID_ARGUMENT; failed to map file handle range 0-18446744073709551615 (18446744073709551615 bytes) from file of 0 total bytes` | Yes, with effort — "file of 0 total bytes" is the load-bearing phrase but is preceded by IREE's internal `SIZE_MAX` "whole file" sentinel leaking into the message, which could read as corruption rather than emptiness to an unfamiliar operator. |
+| Truncated archive (8-byte garbage header) | `...INVALID_ARGUMENT; not enough bytes for a valid IRPA header; file may be empty or truncated` | Yes, cleanly — names the format, the defect, and the likely causes. |
+| Wrong scope name (archive valid, bound under an unreferenced scope) | `...NOT_FOUND; no provider registered that handles scopes like 'model'; while invoking native function io_parameters.load; ...` | Yes — names the specific missing scope. |
+
+Full messages, ASan results, and build-environment notes are in
+`.superpowers/sdd/2026-07-25-irpa-high-level-session-spike/task-6-report.md`. Bottom line
+for the manifest go/no-go: the existence-only check is safe from a crash standpoint; the
+zero-byte message is the one candidate for a friendlier wrapper if this ships, but is not
+a blocker on its own.

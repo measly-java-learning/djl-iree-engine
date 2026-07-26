@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <iterator>
 #include <span>
@@ -110,4 +111,91 @@ TEST_CASE("loading without the required parameters fails", "[params]") {
       IreeRuntime::Load(bytes, kEntryPoint, "local-sync",
                         std::span<const ParameterScope>{}),
       Catch::Matchers::ContainsSubstring("io_parameters"));
+}
+
+namespace {
+// RAII wrapper around a temp file written under the CMake-provided build-tree
+// directory (IREE_DJL_TEST_TMP_DIR = ${CMAKE_CURRENT_BINARY_DIR} for this
+// target), not the CWD the test binary happens to be invoked from. The file
+// is removed when the guard goes out of scope, which -- since every case
+// below expects Load() to throw -- is stack unwinding through a throw, not
+// normal fall-through.
+class TempFileGuard {
+ public:
+  TempFileGuard(const char* name, const char* data, size_t len) {
+    path_ = std::filesystem::path(IREE_DJL_TEST_TMP_DIR) / name;
+    path_str_ = path_.string();
+    std::ofstream out(path_, std::ios::binary | std::ios::trunc);
+    REQUIRE(out.good());
+    if (len > 0) out.write(data, static_cast<std::streamsize>(len));
+    out.close();
+  }
+  ~TempFileGuard() { std::filesystem::remove(path_); }
+
+  TempFileGuard(const TempFileGuard&) = delete;
+  TempFileGuard& operator=(const TempFileGuard&) = delete;
+
+  const char* c_str() const { return path_str_.c_str(); }
+
+ private:
+  std::filesystem::path path_;
+  std::string path_str_;
+};
+}  // namespace
+
+TEST_CASE("missing archive file throws", "[params][errors]") {
+  auto bytes = ReadFile(kScaleVmfb);
+  const ParameterScope scopes[] = {{"model", "/nonexistent/nope.irpa"}};
+  // Full message: "...iree/runtime/src/iree/io/file_handle.c:350: NOT_FOUND;
+  // failed to open file '/nonexistent/nope.irpa'". Assert on the diagnostic
+  // phrase (status code + "failed to open file"), not the literal path or
+  // line number, which will shift across IREE versions.
+  REQUIRE_THROWS_WITH(
+      IreeRuntime::Load(bytes, kEntryPoint, "local-sync", scopes),
+      Catch::Matchers::ContainsSubstring("NOT_FOUND; failed to open file"));
+}
+
+TEST_CASE("zero-byte archive throws rather than crashing", "[params][errors]") {
+  // This is the `touch` bypass case from the manifest contract: existence-only
+  // checking means an empty file WILL reach IREE. It must fail cleanly.
+  TempFileGuard file("empty.irpa", "", 0);
+  auto bytes = ReadFile(kScaleVmfb);
+  const ParameterScope scopes[] = {{"model", file.c_str()}};
+  // Full message: "...INVALID_ARGUMENT; failed to map file handle range
+  // 0-18446744073709551615 (...) from file of 0 total bytes". The mapped
+  // range is an incidental huge sentinel; "0 total bytes" is the stable,
+  // semantic part -- it is literally the diagnosis (empty file).
+  REQUIRE_THROWS_WITH(
+      IreeRuntime::Load(bytes, kEntryPoint, "local-sync", scopes),
+      Catch::Matchers::ContainsSubstring("INVALID_ARGUMENT") &&
+          Catch::Matchers::ContainsSubstring("0 total bytes"));
+}
+
+TEST_CASE("truncated archive throws rather than crashing", "[params][errors]") {
+  const char data[] = "IRPA\x00\x00\x00\x00";
+  TempFileGuard file("truncated.irpa", data, sizeof(data) - 1);
+  auto bytes = ReadFile(kScaleVmfb);
+  const ParameterScope scopes[] = {{"model", file.c_str()}};
+  // Full message: "...INVALID_ARGUMENT; not enough bytes for a valid IRPA
+  // header; file may be empty or truncated" -- an explicit, self-describing
+  // diagnosis, so assert on that phrase rather than just the status code.
+  REQUIRE_THROWS_WITH(
+      IreeRuntime::Load(bytes, kEntryPoint, "local-sync", scopes),
+      Catch::Matchers::ContainsSubstring(
+          "not enough bytes for a valid IRPA header"));
+}
+
+TEST_CASE("wrong scope name throws", "[params][errors]") {
+  auto bytes = ReadFile(kScaleVmfb);
+  // Archive is fine, but bound under a scope the program does not reference.
+  const ParameterScope scopes[] = {{"not_the_model", kScaleIrpa}};
+  // Full message: "...NOT_FOUND; no provider registered that handles scopes
+  // like 'model'; while invoking native function io_parameters.load; ...".
+  // The "no provider registered..." phrase names the actual mismatch (the
+  // program's requested scope vs. the ones supplied), so it is the
+  // meaningful substring, not just the status code.
+  REQUIRE_THROWS_WITH(
+      IreeRuntime::Load(bytes, kEntryPoint, "local-sync", scopes),
+      Catch::Matchers::ContainsSubstring(
+          "no provider registered that handles scopes like"));
 }

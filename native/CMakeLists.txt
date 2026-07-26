@@ -99,7 +99,8 @@ target_compile_definitions(iree_params_test PRIVATE
     IREE_DJL_SCALE_IRPA="${CMAKE_CURRENT_LIST_DIR}/../src/test/resources/models/scale_weights.irpa"
     IREE_DJL_SCALE_IRPA_ZERO="${CMAKE_CURRENT_LIST_DIR}/../src/test/resources/models/scale_weights_zero.irpa"
     IREE_DJL_SCALE2_VMFB="${CMAKE_CURRENT_LIST_DIR}/../src/test/resources/models/scale2.vmfb"
-    IREE_DJL_SCALE2_BIAS_IRPA="${CMAKE_CURRENT_LIST_DIR}/../src/test/resources/models/scale2_bias.irpa")
+    IREE_DJL_SCALE2_BIAS_IRPA="${CMAKE_CURRENT_LIST_DIR}/../src/test/resources/models/scale2_bias.irpa"
+    IREE_DJL_TEST_TMP_DIR="${CMAKE_CURRENT_BINARY_DIR}")
 
 # ASan/LSan leak harness — the go/no-go gate (Task 6)
 add_executable(iree_leak_harness harness/iree_leak_harness.cpp)
