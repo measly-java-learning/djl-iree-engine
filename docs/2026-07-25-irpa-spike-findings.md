@@ -106,8 +106,20 @@ message says "failed to **map** file handle range 0-18446744073709551615": the f
 is a real `mmap(2)` failing, not a metaphor. That mapping is unmapped again as soon as
 the index is built (`irpa_parser.c:342`). The index itself stores only `{file handle,
 offset}` per entry (`irpa_parser.c:125`) — no parameter bytes. Those bytes are fetched
-later, at `io_parameters.load` time (i.e. per `Invoke`, not once at `Load`), span-by-span,
-via `pread(2)` on the retained fd into HAL buffers (`hal/utils/fd_file.c:442`).
+later, at `io_parameters.load` time, span-by-span, via `pread(2)` on the retained fd into
+HAL buffers (`hal/utils/fd_file.c:442`). In this fixture, `io_parameters.load` runs
+**once, during `Load`**, not per inference: `tools/scale.mlir` binds the parameter to a
+`util.global` (`#stream.parameter.named<"model"::"weight">`), so the load executes in the
+module initializer, which runs when the bytecode module is registered on the context
+(`iree_runtime_session_append_bytecode_module_from_memory`,
+`native/core/iree_runtime.cpp:187`) — inside `Load`, not `Invoke`. This is also why every
+one of this document's `Load`-time error messages (§ Error behaviour above) already
+includes `...while invoking native function io_parameters.load`, and why
+`iree_params_test.cpp`'s "wrong scope name" case asserts that message from a failing
+`Load` call, not a failing `Invoke`. A program that instead loaded parameters from inside
+a function body rather than a `util.global` initializer would read at invoke time — this
+finding is about this fixture's binding shape, not a universal property of
+`io_parameters.load`.
 
 So there is **no persistent mapping** of the archive, and there **is** a copy into the
 target buffer on every read. `iree_leak_harness` was extended to accept an optional 4th
@@ -166,8 +178,9 @@ by design (see above), and separately, `iree_io_file_handle_preload`
 it yields a `HOST_ALLOCATION`-backed handle that routes through
 `iree_hal_memory_file_wrap` and unlocks the genuine zero-copy
 `iree_hal_allocator_import_buffer` path (`parameter_index_provider.c:741-763`). Not
-exercised here; noted for whoever picks this up if read-per-invoke `pread` cost becomes a
-concern.
+exercised here; noted for whoever picks this up if the `pread` cost at model-load time
+(a one-off per session `Load`, per the initializer-timing note above — not a per-inference
+cost, at least for `util.global`-bound parameters like this fixture's) becomes a concern.
 
 ## FILE-backed differential (Task 7)
 
