@@ -23,7 +23,7 @@ jobs:
     needs: build-iree-shim
     steps:
         - uses: actions/checkout@v7
-        - uses: actions/setup-java@v5
+        - uses: actions/setup-java@v5.6.0
           with:
             distribution: zulu
             java-version: 17
