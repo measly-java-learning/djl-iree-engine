@@ -70,7 +70,7 @@ source tree, no IREE build tree, and no compiler required** to build or test thi
   `generateIreeDataTypes`.
 - Network access, to fetch the pinned `iree-runtime-dist` tarball (SHA256-verified against
   `native/cmake/IreeRuntimePin.cmake`; a tampered hash fails hard at configure time). The
-  native *test* build additionally fetches Catch2 (v3.5.2) via `FetchContent`'s
+  native *test* build additionally fetches Catch2 (v3.15.2) via `FetchContent`'s
   `GIT_REPOSITORY`/`GIT_TAG` (unpinned by hash) — this needs `git` on `PATH` and network
   access to GitHub as a second host.
 
@@ -149,6 +149,39 @@ The JVM suite: `IreeNativeTest` (JNI boundary, including the scale/scale2 parame
 loads), `AddModelIT` (the implicit bare-`.vmfb` door), `ModelManifestTest` (schema rules),
 `ModelResolverTest` (front doors + containment), and `ScaleModelIT` (manifest directory end to
 end → `[2, 4, 6, 8]`).
+
+## Editor setup (clangd)
+
+The native sources (`native/core`, `native/jni`, `native/test`, `native/harness`) need a
+`compile_commands.json` before clangd can resolve IREE and JNI headers. CMake writes one at
+*configure* time — no build required:
+
+```bash
+JAVA_HOME=/usr/lib/jvm/zulu-17-amd64 \
+  cmake -S native -B native/build -G Ninja -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+```
+
+The committed `.clangd` already points at `native/build`, so nothing else is needed. Four
+things worth knowing:
+
+- **`JAVA_HOME` is not optional here.** `native/CMakeLists.txt` calls
+  `find_package(JNI REQUIRED)`, and a failure is fatal — you get *no* database at all, not
+  just a missing entry for the JNI shim. This affects the editor only; the shipped `.so` is
+  always built against the Corretto 8 headers `native/build.sh` extracts in the container,
+  whatever your host has.
+- **Configure hits the network**, on the same terms as any build: the SHA256-pinned
+  `iree-runtime-dist` tarball plus a Catch2 clone from GitHub.
+- **Don't configure a sanitizer build for this.** Under `-DIREE_DJL_SANITIZE=ON` or
+  `-DIREE_DJL_TSAN=ON` the JNI shim target is skipped entirely, so `jni/iree_djl_jni.cpp`
+  gets no entry and clangd falls back to guessed flags. Re-run the plain configure above
+  after a sanitizer gate.
+- **Never commit `compile_commands.json`.** Every entry carries absolute paths — the build
+  tree, the fetched runtime's include dir, the host JDK, and the `.vmfb`/`.irpa` fixture
+  paths passed as `-D` macro values. `native/build` is covered by the `**/build/` rule in
+  `.gitignore`; if you configure somewhere else, ignore that directory too.
+
+Headers (`iree_runtime.h`, `iree_handles.h`, `iree_status.h`) never appear in the database —
+clangd infers their flags from `core/iree_runtime.cpp`, which includes all three.
 
 ## Native QA
 
