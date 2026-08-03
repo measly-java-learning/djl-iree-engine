@@ -152,8 +152,10 @@ tasks.withType<Test>().configureEach {
     )
 }
 
-// list of one as preparation for additional platforms
-val nativePlatforms = listOf("linux-x86_64")
+// one entry per platform the native build workflow produces (see
+// .github/workflows/native-build-job.yml); each gets a classifier jar +
+// consumable variant below.
+val nativePlatforms = listOf("linux-x86_64", "linux-aarch64")
 
 // MSVC emits no `lib` prefix and a .dll suffix. Keep in sync with LibUtils.libName.
 fun nativeLibName(platform: String): String =
@@ -193,6 +195,12 @@ val nativeJarTasks = nativePlatforms.map { platform ->
 // variants match the standard JVM attribute set and an attribute-less consumer hits ambiguity.
 val nativeVariants = nativePlatforms.map { platform ->
     val osFamily = platform.substringBefore("-") // linux / windows
+    // Gradle's MachineArchitecture has no AARCH64 constant; aarch64 maps to ARM64.
+    val machineArch = when (platform) {
+        "linux-x86_64" -> MachineArchitecture.X86_64
+        "linux-aarch64" -> MachineArchitecture.ARM64
+        else -> error("unhandled platform: $platform")
+    }
     configurations.consumable("nativeRuntimeElements-${platform}") {
         attributes {
             attribute(Category.CATEGORY_ATTRIBUTE, objects.named(Category.LIBRARY))
@@ -202,7 +210,7 @@ val nativeVariants = nativePlatforms.map { platform ->
             attribute(OperatingSystemFamily.OPERATING_SYSTEM_ATTRIBUTE, objects.named(osFamily))
             attribute(
                 MachineArchitecture.ARCHITECTURE_ATTRIBUTE,
-                objects.named(MachineArchitecture.X86_64)
+                objects.named(machineArch)
             )
         }
         outgoing {

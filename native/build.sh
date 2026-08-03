@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Host build, linux-x86_64 only. No container: this skeleton has no glibc
-# floor to hold because it ships nothing. See the spec's deferred list.
+# Host build: the staging platform follows the build host's architecture (linux-x86_64 or
+# linux-aarch64). No container: this skeleton has no glibc floor to hold because it ships
+# nothing. See the spec's deferred list.
 set -euo pipefail
 
 # Host fork. Under Git-Bash on Windows `uname -s` is MINGW64_NT-* or MSYS_NT-*. The caller must have
@@ -81,7 +82,12 @@ cmake --build "${build_dir}"
 if [ "${IR_HOST_OS}" = "windows" ]; then
   OUT_PLATFORM="windows-x86_64"; OUT_LIB="iree_djl.dll"
 else
-  OUT_PLATFORM="linux-x86_64";   OUT_LIB="libiree_djl.so"
+  case "$(uname -m)" in
+    x86_64|amd64)  OUT_PLATFORM="linux-x86_64" ;;
+    aarch64|arm64) OUT_PLATFORM="linux-aarch64" ;;
+    *) echo "unsupported arch: $(uname -m)" >&2; exit 1 ;;
+  esac
+  OUT_LIB="libiree_djl.so"
 fi
 
 # Stage the shim where LibUtils' classpath fallback expects it, once it exists.

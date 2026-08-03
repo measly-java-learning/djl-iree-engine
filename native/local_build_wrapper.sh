@@ -17,10 +17,17 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # Optional first arg: the native/ script to run in the container (default the shim build).
 TARGET_SCRIPT="${1:-native/build.sh}"
 
+# The manylinux image and the Corretto JDK RPM are arch-specific; pick the pair for the host.
+case "$(uname -m)" in
+  x86_64|amd64)  ML_IMAGE_ARCH="x86_64";  CORRETTO_ARCH="x64" ;;
+  aarch64|arm64) ML_IMAGE_ARCH="aarch64"; CORRETTO_ARCH="aarch64" ;;
+  *) echo "unsupported arch: $(uname -m)" >&2; exit 1 ;;
+esac
+
 if [ ! -f "${REPO_ROOT}/amazon-corretto-linux-jdk.rpm" ]; then
   echo "Downloading Amazon Corretto JDK RPM to ${REPO_ROOT}/amazon-corretto-linux-jdk.rpm"
   curl -L -o "${REPO_ROOT}/amazon-corretto-linux-jdk.rpm" \
-    https://corretto.aws/downloads/latest/amazon-corretto-8-x64-linux-jdk.rpm
+    "https://corretto.aws/downloads/latest/amazon-corretto-8-${CORRETTO_ARCH}-linux-jdk.rpm"
 fi
 
 # Must use manylinux_2_28 (glibc >= 2.28) so the shim links the fetched runtime at the 2.28 floor.
@@ -33,5 +40,5 @@ docker run --rm \
     -e WARMUP \
     -v "${REPO_ROOT}":/workspace \
     -w /workspace \
-    quay.io/pypa/manylinux_2_28_x86_64:latest \
+    "quay.io/pypa/manylinux_2_28_${ML_IMAGE_ARCH}:latest" \
     /bin/bash "/workspace/${TARGET_SCRIPT}"

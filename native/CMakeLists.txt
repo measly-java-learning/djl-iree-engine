@@ -16,9 +16,15 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_LIST_DIR}/cmake")
 # then point find_package() at the extracted prefix.
 include(IreeRuntimePin)
 
-# linux-x86_64, default variant only. The helper fails fast if the pin lacks this
-# variant/platform pair; unused variants in the pin download nothing.
-iree_runtime_dist_url("default" "linux-x86_64" _iree_runtime_url _iree_runtime_sha)
+# Default variant, platform derived from the build host (the manylinux container's arch).
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64)$")
+  set(IREE_DJL_PLATFORM "linux-x86_64")
+elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64|ARM64)$")
+  set(IREE_DJL_PLATFORM "linux-aarch64")
+else()
+  message(FATAL_ERROR "djl-iree-engine: unsupported processor '${CMAKE_SYSTEM_PROCESSOR}'")
+endif()
+iree_runtime_dist_url("default" "${IREE_DJL_PLATFORM}" _iree_runtime_url _iree_runtime_sha)
 
 include(FetchContent)
 FetchContent_Declare(iree_runtime_dist
@@ -29,6 +35,18 @@ FetchContent_MakeAvailable(iree_runtime_dist)
 
 list(APPEND CMAKE_PREFIX_PATH "${iree_runtime_dist_SOURCE_DIR}")
 find_package(IreeRuntimeDist REQUIRED)
+
+# Fixtures are per-arch: .vmfb embeds an arch-specific ELF executable (the dist's own
+# sample add.vmfb is x86_64-only, so aarch64 builds must NOT use it). The .irpa files are
+# pure data and ride along in the same dir for a complete per-arch fixture set. Stopgap:
+# override IREE_RUNTIME_DIST_ADD_VMFB until the dist ships per-platform samples
+# (measly-java-learning/iree-runtime-dist#15); drop the override when the pin's config does it.
+if(IREE_DJL_PLATFORM STREQUAL "linux-aarch64")
+  set(IREE_DJL_FIXTURE_DIR "${CMAKE_CURRENT_LIST_DIR}/../src/test/resources/models/aarch64")
+  set(IREE_RUNTIME_DIST_ADD_VMFB "${IREE_DJL_FIXTURE_DIR}/add.vmfb")
+else()
+  set(IREE_DJL_FIXTURE_DIR "${CMAKE_CURRENT_LIST_DIR}/../src/test/resources/models")
+endif()
 
 option(IREE_DJL_SANITIZE "Build with ASan/LSan" OFF)
 option(IREE_DJL_TSAN "Build with ThreadSanitizer" OFF)
@@ -93,24 +111,24 @@ FetchContent_MakeAvailable(Catch2)
 add_executable(iree_runtime_test test/iree_runtime_test.cpp)
 target_link_libraries(iree_runtime_test PRIVATE iree_djl_core Catch2::Catch2WithMain)
 target_compile_definitions(iree_runtime_test PRIVATE
-    IREE_DJL_ADD_VMFB="${CMAKE_CURRENT_LIST_DIR}/../src/test/resources/models/add.vmfb"
+    IREE_DJL_ADD_VMFB="${IREE_DJL_FIXTURE_DIR}/add.vmfb"
     IREE_DIST_ADD_VMFB="${IREE_RUNTIME_DIST_ADD_VMFB}")
 
 add_executable(iree_params_test test/iree_params_test.cpp)
 target_link_libraries(iree_params_test PRIVATE iree_djl_core Catch2::Catch2WithMain)
 target_compile_definitions(iree_params_test PRIVATE
-    IREE_DJL_SCALE_VMFB="${CMAKE_CURRENT_LIST_DIR}/../src/test/resources/models/scale.vmfb"
-    IREE_DJL_SCALE_IRPA="${CMAKE_CURRENT_LIST_DIR}/../src/test/resources/models/scale_weights.irpa"
-    IREE_DJL_SCALE_IRPA_ZERO="${CMAKE_CURRENT_LIST_DIR}/../src/test/resources/models/scale_weights_zero.irpa"
-    IREE_DJL_SCALE2_VMFB="${CMAKE_CURRENT_LIST_DIR}/../src/test/resources/models/scale2.vmfb"
-    IREE_DJL_SCALE2_BIAS_IRPA="${CMAKE_CURRENT_LIST_DIR}/../src/test/resources/models/scale2_bias.irpa"
+    IREE_DJL_SCALE_VMFB="${IREE_DJL_FIXTURE_DIR}/scale.vmfb"
+    IREE_DJL_SCALE_IRPA="${IREE_DJL_FIXTURE_DIR}/scale_weights.irpa"
+    IREE_DJL_SCALE_IRPA_ZERO="${IREE_DJL_FIXTURE_DIR}/scale_weights_zero.irpa"
+    IREE_DJL_SCALE2_VMFB="${IREE_DJL_FIXTURE_DIR}/scale2.vmfb"
+    IREE_DJL_SCALE2_BIAS_IRPA="${IREE_DJL_FIXTURE_DIR}/scale2_bias.irpa"
     IREE_DJL_TEST_TMP_DIR="${CMAKE_CURRENT_BINARY_DIR}")
 
 # ASan/LSan leak harness — the go/no-go gate (Task 6)
 add_executable(iree_leak_harness harness/iree_leak_harness.cpp)
 target_link_libraries(iree_leak_harness PRIVATE iree_djl_core)
 target_compile_definitions(iree_leak_harness PRIVATE
-    IREE_DJL_ADD_VMFB="${CMAKE_CURRENT_LIST_DIR}/../src/test/resources/models/add.vmfb")
+    IREE_DJL_ADD_VMFB="${IREE_DJL_FIXTURE_DIR}/add.vmfb")
 
 # JNI shim (Task 7): thin marshalling layer over iree_djl_core. Skipped under any
 # sanitizer: sanitized builds are QA-only, never shipped, and JVM-free — so they must

@@ -17,10 +17,29 @@ import java.nio.file.StandardCopyOption;
 public final class LibUtils {
 
     private static final String LIB_NAME = "libiree_djl.so";
-    private static final String PLATFORM = "linux-x86_64";
     private static boolean loaded;
 
     private LibUtils() {}
+
+    /**
+     * Resolves the platform directory under /native on the classpath. Mirrors
+     * the ExecuTorch engine's seam (os.name/os.arch mapping) extended for
+     * aarch64.
+     */
+    static String platform() {
+        String os = System.getProperty("os.name").toLowerCase();
+        String arch = System.getProperty("os.arch").toLowerCase();
+        if (os.contains("linux")) {
+            if (arch.equals("amd64") || arch.equals("x86_64")) {
+                return "linux-x86_64";
+            }
+            if (arch.equals("aarch64") || arch.equals("arm64")) {
+                return "linux-aarch64";
+            }
+        }
+        throw new UnsupportedOperationException(
+                "IREE engine supports only linux-x86_64 and linux-aarch64, got: " + os + "/" + arch);
+    }
 
     public static synchronized void loadLibrary() {
         if (loaded) {
@@ -32,12 +51,12 @@ public final class LibUtils {
             loaded = true;
             return;
         }
-        System.load(extractFromClasspath().toAbsolutePath().toString());
+        System.load(extractFromClasspath(platform()).toAbsolutePath().toString());
         loaded = true;
     }
 
-    private static Path extractFromClasspath() {
-        String resource = "/native/" + PLATFORM + "/" + LIB_NAME;
+    private static Path extractFromClasspath(String platform) {
+        String resource = "/native/" + platform + "/" + LIB_NAME;
         try (InputStream in = LibUtils.class.getResourceAsStream(resource)) {
             if (in == null) {
                 throw new IllegalStateException(
