@@ -4,6 +4,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <new>
 #include <span>
 #include <vector>
 #include "core/iree_runtime.h"
@@ -68,8 +69,8 @@ TEST_CASE("import outcome is recorded for every input", "[runtime][import]") {
   auto runtime = IreeRuntime::Load(bytes, kEntryPoint);
 
   // Over-aligned host allocation: the best case for a zero-copy import.
-  void* aligned = nullptr;
-  REQUIRE(posix_memalign(&aligned, 64, 4 * sizeof(float)) == 0);
+  // C++17 aligned new/delete (not posix_memalign) so this compiles under MSVC too.
+  void* aligned = ::operator new(4 * sizeof(float), std::align_val_t{64});
   float* lhs = static_cast<float*>(aligned);
   for (int i = 0; i < 4; ++i) lhs[i] = static_cast<float>(i);
   const float rhs[4] = {0.0f, 0.0f, 0.0f, 0.0f};
@@ -89,7 +90,7 @@ TEST_CASE("import outcome is recorded for every input", "[runtime][import]") {
   WARN("import outcome[0] = "
        << (outcomes[0] == IreeRuntime::ImportOutcome::kWrapped ? "WRAPPED"
                                                                : "STAGED"));
-  free(aligned);
+  ::operator delete(aligned, std::align_val_t{64});
 }
 
 // Compiler-free post-link smoke test (Task 2, brief §Step 4): the dist

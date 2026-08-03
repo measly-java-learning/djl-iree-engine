@@ -11,6 +11,7 @@
 #include <cstring>
 #include <fstream>
 #include <iterator>
+#include <new>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -99,8 +100,8 @@ void ErrorPathCycle(const std::vector<std::byte>& vmfb, const char* driver) {
 void ImportEscapeCheck(const std::vector<std::byte>& vmfb, const char* driver) {
   auto runtime = IreeRuntime::Load(vmfb, kEntryPoint, driver);
 
-  void* aligned = nullptr;
-  if (posix_memalign(&aligned, 64, 4 * sizeof(float)) != 0) std::exit(73);
+  // C++17 aligned new/delete (not posix_memalign) so this compiles under MSVC too.
+  void* aligned = ::operator new(4 * sizeof(float), std::align_val_t{64});
   float* lhs = static_cast<float*>(aligned);
   for (int i = 0; i < 4; ++i) lhs[i] = static_cast<float>(i);
   const float rhs[4] = {1.0f, 1.0f, 1.0f, 1.0f};
@@ -114,7 +115,7 @@ void ImportEscapeCheck(const std::vector<std::byte>& vmfb, const char* driver) {
   std::printf("import outcome (aligned host alloc): %s\n",
               outcome == IreeRuntime::ImportOutcome::kWrapped ? "WRAPPED" : "STAGED");
 
-  free(aligned);  // poisoned by ASan from here on
+  ::operator delete(aligned, std::align_val_t{64});  // poisoned by ASan from here on
 
   // If an imported buffer escaped Invoke, this second call touches freed memory.
   const float safe_lhs[4] = {1.0f, 2.0f, 3.0f, 4.0f};
