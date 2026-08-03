@@ -16,14 +16,34 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_LIST_DIR}/cmake")
 # then point find_package() at the extracted prefix.
 include(IreeRuntimePin)
 
-# Default variant, platform derived from the build host (the manylinux container's arch).
-if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64)$")
-  set(IREE_DJL_PLATFORM "linux-x86_64")
+# Platform identity, derived from the build host (WIN32 before the processor,
+# because MSVC's CMAKE_SYSTEM_PROCESSOR is AMD64, which would otherwise win).
+# A CACHE variable rather than a plain set(): on a Linux box,
+#   cmake -DIREE_DJL_PLATFORM=windows-x86_64
+# resolves the Windows pin row and fetches/verifies the tarball with no Windows
+# machine involved — the host-test seam.
+if(WIN32)
+  set(_IREE_DJL_PLATFORM_DEFAULT "windows-x86_64")
 elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64|ARM64)$")
-  set(IREE_DJL_PLATFORM "linux-aarch64")
+  set(_IREE_DJL_PLATFORM_DEFAULT "linux-aarch64")
+elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64)$")
+  set(_IREE_DJL_PLATFORM_DEFAULT "linux-x86_64")
 else()
   message(FATAL_ERROR "djl-iree-engine: unsupported processor '${CMAKE_SYSTEM_PROCESSOR}'")
 endif()
+set(IREE_DJL_PLATFORM "${_IREE_DJL_PLATFORM_DEFAULT}" CACHE STRING
+    "Platform identity: linux-x86_64 | linux-aarch64 | windows-x86_64")
+
+# The pinned Windows runtime is /MT (its BUILDINFO records crt=MT). Match it:
+# a /MD consumer linking a /MT prefix is NOT reliably caught at link time
+# (measured upstream: no LNK2005, not even an LNK4098) and corrupts at runtime
+# — two CRTs, two heaps. Static linkage also means end users need no VC++
+# redistributable.
+if(WIN32)
+  set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded" CACHE STRING
+      "Static CRT: ship without a VC++ redist")
+endif()
+
 iree_runtime_dist_url("default" "${IREE_DJL_PLATFORM}" _iree_runtime_url _iree_runtime_sha)
 
 include(FetchContent)
@@ -41,6 +61,9 @@ find_package(IreeRuntimeDist REQUIRED)
 # pure data and ride along in the same dir for a complete per-arch fixture set. Stopgap:
 # override IREE_RUNTIME_DIST_ADD_VMFB until the dist ships per-platform samples
 # (measly-java-learning/iree-runtime-dist#15); drop the override when the pin's config does it.
+# windows-x86_64 deliberately falls through to the default x86_64 fixture directory below:
+# fixtures are arch-keyed, not OS-keyed (embedded-ELF loads on any OS); a windows-x86_64
+# fixture dir is never created.
 if(IREE_DJL_PLATFORM STREQUAL "linux-aarch64")
   set(IREE_DJL_FIXTURE_DIR "${CMAKE_CURRENT_LIST_DIR}/../src/test/resources/models/aarch64")
   set(IREE_RUNTIME_DIST_ADD_VMFB "${IREE_DJL_FIXTURE_DIR}/add.vmfb")
@@ -59,13 +82,22 @@ if(IREE_DJL_SANITIZE AND IREE_DJL_TSAN)
 endif()
 
 if(IREE_DJL_SANITIZE)
-  add_compile_options(-fsanitize=address -fno-omit-frame-pointer -g)
-  add_link_options(-fsanitize=address)
+  if(WIN32)
+    add_compile_options(/fsanitize=address)
+    add_link_options(/fsanitize=address /INCREMENTAL:NO)
+  else()
+    add_compile_options(-fsanitize=address -fno-omit-frame-pointer -g)
+    add_link_options(-fsanitize=address)
+  endif()
 endif()
 
 if(IREE_DJL_TSAN)
-  add_compile_options(-fsanitize=thread -fno-omit-frame-pointer -g)
-  add_link_options(-fsanitize=thread)
+  if(WIN32)
+    message(FATAL_ERROR "IREE_DJL_TSAN is unsupported on Windows: MSVC has no ThreadSanitizer")
+  else()
+    add_compile_options(-fsanitize=thread -fno-omit-frame-pointer -g)
+    add_link_options(-fsanitize=thread)
+  endif()
 endif()
 
 # Link smoke test (Task 1)
@@ -139,5 +171,7 @@ if(NOT IREE_DJL_SANITIZE AND NOT IREE_DJL_TSAN)
   target_include_directories(iree_djl PRIVATE ${JNI_INCLUDE_DIRS})
   target_link_libraries(iree_djl PRIVATE iree_djl_core)
   # Hide IREE's symbols so they cannot collide with anything else in the JVM.
-  target_link_options(iree_djl PRIVATE -Wl,--exclude-libs,ALL)
+  if(NOT WIN32)
+    target_link_options(iree_djl PRIVATE -Wl,--exclude-libs,ALL)
+  endif()
 endif()
