@@ -43,6 +43,12 @@ MSVC-specific hazards: `2026-07-15-windows-builds-design.md` and
 
 ## 3. Fixture portability fix — lands first, on its own
 
+**Status: implemented.** Plan:
+`docs/superpowers/plans/2026-08-03-fixture-portability-fix.md`.
+PR: [#8](https://github.com/measly-java-learning/djl-iree-engine/pull/8)
+(commit `a8f9114`). Task 2 of that plan — wiring the guard into CI — is not yet
+done and is tracked there, not here.
+
 This is an independent bug fix with no Windows content. It ships as the first
 commit, before any Windows work, and stands on its own merits.
 
@@ -78,6 +84,15 @@ reports `generic`; `native/build_qa.sh` stays green on Linux x86_64.
 
 No `windows-x86_64` fixture directory is created. Fixture portability is an
 architecture property, not an operating-system one.
+
+**Delivered beyond this section as written:** the implementation also added
+`tools/check_fixture_portability.sh`, a permanent guard asserting that every
+committed `.vmfb` carries `cpu = "generic"` and an OS-agnostic embedded-ELF
+triple. This section originally specified only the script fix and the
+regeneration. The guard was added because the bug is invisible on AVX-512
+hardware — which is how it survived three prior commits to `add.vmfb` — so
+without it the next contributor running `export_add.sh` without
+`IREE_TARGET_TRIPLE` set reintroduces it silently.
 
 ## 4. CMake platform seam
 
@@ -340,8 +355,11 @@ satisfiable as stated because `native-build.yml` triggers only on push-to-`main`
 and `pull_request` — **pushing a feature branch fires no CI**, so the
 clone-on-winbox flow costs nothing and reaches GitHub only as an inert branch.
 
-1. **Fixture fix (§3), own commit.** Regenerate `add.vmfb` as `generic`; confirm
-   `native/build.sh` and `native/build_qa.sh` still green on Linux x86_64.
+1. ~~**Fixture fix (§3), own commit.** Regenerate `add.vmfb` as `generic`; confirm
+   `native/build.sh` and `native/build_qa.sh` still green on Linux x86_64.~~
+   **Done** — PR [#8](https://github.com/measly-java-learning/djl-iree-engine/pull/8),
+   commit `a8f9114`. Native QA and `./gradlew test` both green in the
+   manylinux_2_28 container.
 2. **Host-test seam.** `cmake -DIREE_DJL_PLATFORM=windows-x86_64` on Linux;
    assert the Windows pin row resolves and the tarball downloads and verifies.
    Catches §4 errors without leaving Linux.
