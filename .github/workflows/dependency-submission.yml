@@ -18,5 +18,7 @@ jobs:
       with:
         distribution: zulu
         java-version: 17
+    - name: Fetch iree-runtime-dist metadata
+      run: bash tools/fetch-iree-metadata.sh
     - name: Generate and submit dependency graph
       uses: gradle/actions/dependency-submission@v6
