@@ -1,0 +1,13 @@
+# Point clangd at the CMake-generated compile_commands.json. The path is
+# relative to this file's directory, so it resolves the same for every clone.
+#
+# Generate the database once (see "Editor setup (clangd)" in README.md):
+#   cmake -S native -B native/build -G Ninja -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+#
+# Only this file is committed. compile_commands.json itself never is: its entries
+# carry absolute paths (the build tree, the fetched runtime's include dir, the
+# JDK, and the .vmfb/.irpa fixture paths passed as -D macro values), so it is
+# valid only on the machine that generated it. native/build is already ignored
+# by the `**/build/` rule in .gitignore.
+CompileFlags:
+  CompilationDatabase: native/build
