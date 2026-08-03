@@ -1,7 +1,9 @@
 # Windows amd64 support for djl-iree-engine
 
 **Date:** 2026-08-03
-**Status:** Approved, not yet implemented
+**Status:** Partially implemented — §3 (fixture portability fix) has shipped;
+the remaining sections (Windows amd64 support proper) are approved but not yet
+implemented.
 
 ## 1. Goal
 
@@ -46,8 +48,8 @@ MSVC-specific hazards: `2026-07-15-windows-builds-design.md` and
 **Status: implemented.** Plan:
 `docs/superpowers/plans/2026-08-03-fixture-portability-fix.md`.
 PR: [#8](https://github.com/measly-java-learning/djl-iree-engine/pull/8)
-(commit `a8f9114`). Task 2 of that plan — wiring the guard into CI — is not yet
-done and is tracked there, not here.
+(commit `a8f9114`). Task 2 of that plan — wiring the guard into CI — is also
+done, landed in commit `7e6e773` on the same branch.
 
 This is an independent bug fix with no Windows content. It ships as the first
 commit, before any Windows work, and stands on its own merits.
@@ -79,8 +81,11 @@ CPU-feature set changes. The compiler is the pinned `iree-base-compiler==3.11.0`
 in `.venv`, whose `--version` embeds commit `e4a3b0405d...`, matching the dist's
 `runtime_commit` exactly.
 
-**Acceptance:** `strings src/test/resources/models/add.vmfb | grep 'cpu = '`
-reports `generic`; `native/build_qa.sh` stays green on Linux x86_64.
+**Acceptance:** `bash tools/check_fixture_portability.sh` passes (equivalently,
+`grep -a 'cpu = ' src/test/resources/models/add.vmfb` reports `generic`) —
+`strings` is deliberately avoided here and in the guard script itself, since
+Git-Bash, the shell this doc targets, lacks binutils; `native/build_qa.sh`
+stays green on Linux x86_64.
 
 No `windows-x86_64` fixture directory is created. Fixture portability is an
 architecture property, not an operating-system one.
@@ -88,11 +93,20 @@ architecture property, not an operating-system one.
 **Delivered beyond this section as written:** the implementation also added
 `tools/check_fixture_portability.sh`, a permanent guard asserting that every
 committed `.vmfb` carries `cpu = "generic"` and an OS-agnostic embedded-ELF
-triple. This section originally specified only the script fix and the
-regeneration. The guard was added because the bug is invisible on AVX-512
-hardware — which is how it survived three prior commits to `add.vmfb` — so
-without it the next contributor running `export_add.sh` without
-`IREE_TARGET_TRIPLE` set reintroduces it silently.
+triple whose architecture matches its directory. This section originally
+specified only the script fix and the regeneration. The guard was added
+because the bug is invisible on AVX-512 hardware — which is how it survived
+three prior commits to `add.vmfb` — and because, pre-fix, the next contributor
+running `export_add.sh` without `IREE_TARGET_TRIPLE` set would have
+reintroduced it silently (that hazard is what motivated the guard; the shipped
+script no longer has it — omitting `IREE_TARGET_TRIPLE` now yields `cpu =
+"generic"` regardless, verified byte-identical to the explicit-triple output on
+x86_64). The guard's ongoing value is catching a fixture regenerated through
+some other route, or built on a different host architecture: e.g. running
+`export_add.sh` on an aarch64 host with no `IREE_TARGET_TRIPLE` set defaults to
+the host triple and would silently overwrite the x86_64 fixture with an
+aarch64 one — the guard's per-directory architecture check (see the fixture
+portability plan, Task 1) catches exactly this.
 
 ## 4. CMake platform seam
 

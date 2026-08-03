@@ -14,11 +14,24 @@
 #                        fixture set serves Linux and Windows alike and no per-OS
 #                        fixture directory is needed.
 #
+#   target_triple arch   The triple's architecture prefix must match the fixture's
+#                        directory: fixtures directly under models/ must start
+#                        x86_64-, fixtures under models/aarch64/ must start aarch64-.
+#                        This is what actually ties a fixture to the host it's meant
+#                        for — without it, e.g. running export_add.sh with no
+#                        IREE_TARGET_TRIPLE set on an aarch64 host silently overwrites
+#                        the x86_64 fixture with an aarch64 one that still passes a
+#                        triple-suffix-only check.
+#
 # Assertions are POSITIVE — a fixture must CARRY the expected value. An absence-only
 # check ("no tigerlake found") reports PASS when grep never matched anything at all,
 # e.g. against a truncated or non-vmfb file. For the same reason this script FAILS
 # when it finds zero fixtures: a silent no-op that exits 0 is the failure mode a
 # guard like this is most likely to rot into.
+#
+# Every occurrence of `cpu = ` and `target_triple = ` in a file is checked, not just
+# the first — a multi-target module whose first executable is generic but whose
+# second is host-specific must still fail.
 #
 # Uses `grep -a`, not `strings`: binutils is not present on every host this may run
 # on (Git-Bash notably lacks it), and grep -a reads the attribute text embedded in
@@ -38,27 +51,56 @@ while IFS= read -r vmfb; do
   checked=$((checked + 1))
   bad=0
 
-  cpu="$(LC_ALL=C grep -a -o -m1 'cpu = "[^"]*"' "${vmfb}" | head -1)"
-  if [ -z "${cpu}" ]; then
+  # Expected architecture is derived from the fixture's directory, not a
+  # hardcoded per-file list, so new fixtures are covered automatically.
+  case "${rel}" in
+    */aarch64/*) expected_arch="aarch64-" ;;
+    *)           expected_arch="x86_64-" ;;
+  esac
+
+  cpu_count=0
+  last_cpu=""
+  while IFS= read -r cpu; do
+    cpu_count=$((cpu_count + 1))
+    last_cpu="${cpu}"
+    if [ "${cpu}" != 'cpu = "generic"' ]; then
+      echo "FAIL ${rel}: ${cpu} — must be cpu = \"generic\""
+      echo "     regenerate with tools/export_add.sh or tools/export_scale.sh"
+      bad=1
+    fi
+  done < <(LC_ALL=C grep -a -o 'cpu = "[^"]*"' "${vmfb}")
+  if [ "${cpu_count}" -eq 0 ]; then
     echo "FAIL ${rel}: no 'cpu = ' attribute found — not a vmfb, or truncated"
-    bad=1
-  elif [ "${cpu}" != 'cpu = "generic"' ]; then
-    echo "FAIL ${rel}: ${cpu} — must be cpu = \"generic\""
-    echo "     regenerate with tools/export_add.sh or tools/export_scale.sh"
     bad=1
   fi
 
-  triple="$(LC_ALL=C grep -a -o -m1 'target_triple = "[^"]*"' "${vmfb}" | head -1)"
-  if [ -z "${triple}" ]; then
+  triple_count=0
+  last_triple=""
+  while IFS= read -r triple; do
+    triple_count=$((triple_count + 1))
+    last_triple="${triple}"
+    if ! printf '%s' "${triple}" | grep -q -- '-elf"$'; then
+      echo "FAIL ${rel}: ${triple} — must be an embedded-ELF triple ending in -elf"
+      bad=1
+    fi
+    triple_value="${triple#target_triple = \"}"
+    triple_value="${triple_value%\"}"
+    case "${triple_value}" in
+      "${expected_arch}"*) ;;
+      *)
+        echo "FAIL ${rel}: ${triple} — must start with '${expected_arch}' to match its directory"
+        echo "     regenerate with IREE_TARGET_TRIPLE set to the correct architecture triple"
+        bad=1
+        ;;
+    esac
+  done < <(LC_ALL=C grep -a -o 'target_triple = "[^"]*"' "${vmfb}")
+  if [ "${triple_count}" -eq 0 ]; then
     echo "FAIL ${rel}: no 'target_triple = ' attribute found"
-    bad=1
-  elif ! printf '%s' "${triple}" | grep -q -- '-elf"$'; then
-    echo "FAIL ${rel}: ${triple} — must be an embedded-ELF triple ending in -elf"
     bad=1
   fi
 
   if [ "${bad}" -eq 0 ]; then
-    echo "ok   ${rel}: ${cpu}, ${triple}"
+    echo "ok   ${rel}: ${last_cpu}, ${last_triple} (${cpu_count} cpu, ${triple_count} triple occurrence(s))"
   else
     rc=1
   fi
