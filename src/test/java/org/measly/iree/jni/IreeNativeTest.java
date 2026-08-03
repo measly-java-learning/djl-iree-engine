@@ -20,6 +20,12 @@ class IreeNativeTest {
     private static final int F32 = 0x21000020;
     private static final String ENTRY_POINT = "module.add";
 
+    // The add fixture's operands and golden sum, hoisted so the invoke helper
+    // and the tests that assert on it share one source of truth.
+    private static final float[] ADD_LHS = {1f, 2f, 3f, 4f};
+    private static final float[] ADD_RHS = {10f, 20f, 30f, 40f};
+    private static final float[] ADD_SUM = {11f, 22f, 33f, 44f};
+
     private static byte[] addVmfb() throws IOException {
         try (InputStream in =
                 IreeNativeTest.class.getResourceAsStream("/models/add.vmfb")) {
@@ -53,10 +59,7 @@ class IreeNativeTest {
         IreeTensor[] outputs =
                 IreeNative.invoke(
                         handle,
-                        new ByteBuffer[] {
-                            directFloats(1f, 2f, 3f, 4f),
-                            directFloats(10f, 20f, 30f, 40f)
-                        },
+                        new ByteBuffer[] {directFloats(ADD_LHS), directFloats(ADD_RHS)},
                         new long[][] {{4L}, {4L}},
                         new int[] {F32, F32});
         assertEquals(1, outputs.length);
@@ -70,7 +73,7 @@ class IreeNativeTest {
         long handle = IreeNative.load(addVmfb(), ENTRY_POINT, "local-sync");
         assertTrue(handle != 0L);
         try {
-            assertArrayEquals(new float[] {11f, 22f, 33f, 44f}, invokeAdd(handle), 1e-6f);
+            assertArrayEquals(ADD_SUM, invokeAdd(handle), 1e-6f);
         } finally {
             IreeNative.close(handle);
         }
@@ -119,7 +122,7 @@ class IreeNativeTest {
         long handle = IreeNative.load(addVmfb(), ENTRY_POINT, "local-task");
         assertTrue(handle != 0L);
         try {
-            assertArrayEquals(new float[] {11f, 22f, 33f, 44f}, invokeAdd(handle), 1e-6f);
+            assertArrayEquals(ADD_SUM, invokeAdd(handle), 1e-6f);
         } finally {
             IreeNative.close(handle);
         }

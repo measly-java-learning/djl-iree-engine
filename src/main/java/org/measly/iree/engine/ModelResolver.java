@@ -35,6 +35,7 @@ import java.util.Map;
 public final class ModelResolver {
 
     private static final String MANIFEST_FILE_NAME = "djl-iree-model.json";
+    private static final String VMFB_SUFFIX = ".vmfb";
 
     private ModelResolver() {}
 
@@ -51,15 +52,15 @@ public final class ModelResolver {
                 manifestFile = json;
                 sourceLabel = json.toString();
             } else {
-                Path vmfb = modelPath.resolve(prefix + ".vmfb");
+                Path vmfb = modelPath.resolve(prefix + VMFB_SUFFIX);
                 if (Files.isRegularFile(vmfb)) {
                     // Implicit manifest: one downstream path for all three doors.
                     return resolveManifest(
-                            new ModelManifest(1, prefix + ".vmfb", null, Map.of()),
+                            new ModelManifest(1, prefix + VMFB_SUFFIX, null, Map.of()),
                             modelPath, "<implicit manifest>", options);
                 }
                 throw new FileNotFoundException(modelPath + " contains neither " + MANIFEST_FILE_NAME
-                        + " nor " + prefix + ".vmfb");
+                        + " nor " + prefix + VMFB_SUFFIX);
             }
         } else {
             throw new FileNotFoundException(

@@ -15,14 +15,21 @@ import java.util.Map;
  */
 public record IreeLoadOptions(String entryPoint, String device, boolean allowUnsafePaths) {
 
+    private static final String KEY_ENTRY_POINT = "entryPoint";
+    private static final String KEY_DEVICE = "device";
+    private static final String KEY_ALLOW_UNSAFE_PATHS = "allowUnsafePaths";
+    private static final String DEFAULT_DEVICE = "local-sync";
+
     public static IreeLoadOptions from(Map<String, ?> options) {
         if (options == null) {
-            return new IreeLoadOptions(null, "local-sync", false);
+            return new IreeLoadOptions(null, DEFAULT_DEVICE, false);
         }
-        String entryPoint =
-                options.get("entryPoint") != null ? String.valueOf(options.get("entryPoint")) : null;
-        String device = options.get("device") != null ? String.valueOf(options.get("device")) : "local-sync";
-        boolean allowUnsafePaths = Boolean.parseBoolean(String.valueOf(options.get("allowUnsafePaths")));
+        Object entryPointValue = options.get(KEY_ENTRY_POINT);
+        Object deviceValue = options.get(KEY_DEVICE);
+        String entryPoint = entryPointValue != null ? String.valueOf(entryPointValue) : null;
+        String device = deviceValue != null ? String.valueOf(deviceValue) : DEFAULT_DEVICE;
+        boolean allowUnsafePaths =
+                Boolean.parseBoolean(String.valueOf(options.get(KEY_ALLOW_UNSAFE_PATHS)));
         return new IreeLoadOptions(entryPoint, device, allowUnsafePaths);
     }
 }

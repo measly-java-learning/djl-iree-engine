@@ -45,11 +45,14 @@ public class IreeModel extends BaseModel {
         byte[] bytes = Files.readAllBytes(resolved.vmfb());
 
         List<ParameterBinding> params = resolved.parameters();
-        String[] scopes = new String[params.size()];
-        String[] paths = new String[params.size()];
-        for (int i = 0; i < params.size(); i++) {
-            scopes[i] = params.get(i).scope();
-            paths[i] = params.get(i).path().toString();
+        final int count = params.size();
+        String[] scopes = new String[count];
+        String[] paths = new String[count];
+        int i = 0;
+        for (ParameterBinding binding : params) {
+            scopes[i] = binding.scope();
+            paths[i] = binding.path().toString();
+            i++;
         }
 
         long handle = IreeNative.load(bytes, entryPoint, opts.device(), scopes, paths);

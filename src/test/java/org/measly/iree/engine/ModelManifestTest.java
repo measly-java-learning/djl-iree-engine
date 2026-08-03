@@ -21,11 +21,9 @@ class ModelManifestTest {
 
     @Test
     void parsesFullDocument() throws ManifestException {
-        ModelManifest m =
-                parse(
-                        """
-                        {"schemaVersion":1,"program":"model.vmfb","entryPoint":"module.main",\
-                         "parameters":{"model":"weights.irpa","bias":"bias.irpa"}}""");
+        ModelManifest m = parse("""
+                {"schemaVersion":1,"program":"model.vmfb","entryPoint":"module.main",\
+                 "parameters":{"model":"weights.irpa","bias":"bias.irpa"}}""");
         assertEquals(1, m.schemaVersion());
         assertEquals("model.vmfb", m.program());
         assertEquals("module.main", m.entryPoint());
@@ -50,11 +48,9 @@ class ModelManifestTest {
 
     @Test
     void ignoresUnknownFields() throws ManifestException {
-        ModelManifest m =
-                parse(
-                        """
-                        {"schemaVersion":1,"program":"model.vmfb",\
-                         "variants":{"sse":"a.vmfb"},"futureField":123}""");
+        ModelManifest m = parse("""
+                {"schemaVersion":1,"program":"model.vmfb",\
+                 "variants":{"sse":"a.vmfb"},"futureField":123}""");
         assertEquals("model.vmfb", m.program());
         assertEquals(1, m.schemaVersion());
         assertEquals(Map.of(), m.parameters());
