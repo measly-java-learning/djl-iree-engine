@@ -90,14 +90,10 @@ if [[ -f "${lib}" ]]; then
   dest="${here}/../src/main/resources/native/${OUT_PLATFORM}"
   mkdir -p "${dest}"
   cp "${lib}" "${dest}/"
-  # Also stage element_types.json so the Java build can find it without the CMake build tree
-  IR_RUNTIME_ROOT="${build_dir}/_deps/iree_runtime_dist-src"
-  test -f "${IR_RUNTIME_ROOT}/share/iree-runtime-dist/element_types.json" \
-    || { echo "element_types.json file missing under ${IR_RUNTIME_ROOT}"; exit 1; }
-  cp "${IR_RUNTIME_ROOT}/share/iree-runtime-dist/element_types.json" "${dest}/"
   echo "Artifact: ${dest}/${OUT_LIB}"
 
   # Third-party notices from the resolved runtime tree. Required — never ship a binary without them. 
+  IR_RUNTIME_ROOT="${build_dir}/_deps/iree_runtime_dist-src"
   test -f "${IR_RUNTIME_ROOT}/LICENSE" && test -d "${IR_RUNTIME_ROOT}/THIRD-PARTY-NOTICES" \
     || { echo "runtime notices missing under ${IR_RUNTIME_ROOT} (LICENSE + THIRD-PARTY-NOTICES/)"; exit 1; }
   LIC_OUT="${dest}/licenses"

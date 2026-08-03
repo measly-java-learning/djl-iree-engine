@@ -26,9 +26,11 @@ abstract class IreeDataTypeCodegen : DefaultTask() {
         if (!manifestFile.exists()) {
             throw GradleException(
                 "iree-runtime-dist element_types.json not found at: $manifestFile\n" +
-                    "This file is produced by the native CMake build (FetchContent of iree-runtime-dist).\n" +
-                    "Run `./native/build.sh` first, or point at an alternate manifest with " +
-                    "-PireeElementTypes=/path/to/element_types.json."
+                    "This file is extracted by the syncIreeMetadata Gradle task from the\n" +
+                    "iree-runtime-metadata zip (see third-party/iree-runtime-metadata.properties).\n" +
+                    "Run the one-time prerequisite first:\n" +
+                    "  bash tools/fetch-iree-metadata.sh\n" +
+                    "or point at an alternate manifest with -PireeElementTypes=/path/to/element_types.json."
             )
         }
 
@@ -49,7 +51,9 @@ abstract class IreeDataTypeCodegen : DefaultTask() {
     // Parsing
     // ---------------------------------------------------------------------------
 
-    private fun parseManifest(file: java.io.File): Map<String, Int> {
+    private data class ElementType(val name: String, val value: Int, val hex: String)
+
+    private fun parseManifest(file: java.io.File): Map<String, ElementType> {
         val parsed = try {
             JsonSlurper().parse(file)
         } catch (e: Exception) {
@@ -61,25 +65,44 @@ abstract class IreeDataTypeCodegen : DefaultTask() {
         if (parsed !is Map<*, *>) {
             throw GradleException(
                 "element_types.json ($file) has an unexpected shape: " +
-                    "expected a flat JSON object of NAME -> integer, got a ${parsed?.javaClass?.name ?: "null"}."
+                    "expected a JSON object with schema_version and element_types, " +
+                    "got a ${parsed?.javaClass?.name ?: "null"}."
+            )
+        }
+        if (parsed["schema_version"] != 1) {
+            throw GradleException(
+                "element_types.json ($file) has schema_version=${parsed["schema_version"]}; " +
+                    "this build of IreeDataTypeCodegen supports schema_version 1 only."
+            )
+        }
+        val rawTypes = parsed["element_types"]
+        if (rawTypes !is Map<*, *>) {
+            throw GradleException(
+                "element_types.json ($file) is missing the \"element_types\" object."
             )
         }
 
-        val entries = LinkedHashMap<String, Int>()
-        for ((rawKey, rawValue) in parsed) {
-            if (rawKey !is String || rawValue !is Number) {
+        val entries = LinkedHashMap<String, ElementType>()
+        for ((rawKey, rawProps) in rawTypes) {
+            if (rawKey !is String || rawProps !is Map<*, *>) {
                 throw GradleException(
                     "element_types.json ($file) has an unexpected entry: " +
-                        "key=$rawKey (${rawKey?.javaClass?.name}), value=$rawValue (${rawValue?.javaClass?.name})."
+                        "key=$rawKey (${rawKey?.javaClass?.name}), value=${rawProps?.javaClass?.name}. " +
+                        "Each entry must be an object with at least value and hex."
                 )
             }
-            val intValue = rawValue.toLong()
-            if (intValue !in Int.MIN_VALUE.toLong()..Int.MAX_VALUE.toLong()) {
-                throw GradleException(
-                    "element_types.json entry \"$rawKey\" = $rawValue does not fit in a Java int."
-                )
+            val value = (rawProps["value"] as? Number)
+                ?: throw GradleException("Entry \"$rawKey\" is missing a numeric \"value\".")
+            val longValue = value.toLong()
+            if (longValue !in Int.MIN_VALUE.toLong()..Int.MAX_VALUE.toLong()) {
+                throw GradleException("element_types.json entry \"$rawKey\" = $longValue does not fit in a Java int.")
             }
-            entries[rawKey] = intValue.toInt()
+            val hex = rawProps["hex"] as? String
+                ?: throw GradleException("Entry \"$rawKey\" is missing the \"hex\" string.")
+            if (!hex.matches(Regex("0x[0-9a-fA-F]{8}"))) {
+                throw GradleException("Entry \"$rawKey\" has malformed hex \"$hex\" (expected 0x%08x).")
+            }
+            entries[rawKey] = ElementType(rawKey, longValue.toInt(), hex)
         }
 
         if (entries.size < 24) {
@@ -153,7 +176,7 @@ abstract class IreeDataTypeCodegen : DefaultTask() {
     // Validation
     // ---------------------------------------------------------------------------
 
-    private fun validateMappings(mappings: List<TypeMapping>, manifest: Map<String, Int>) {
+    private fun validateMappings(mappings: List<TypeMapping>, manifest: Map<String, ElementType>) {
         // 1. Every IREE key in mappings must exist in the manifest
         for (m in mappings) {
             if (m.iree !in manifest) {
@@ -202,7 +225,7 @@ abstract class IreeDataTypeCodegen : DefaultTask() {
     // ---------------------------------------------------------------------------
 
     private fun generateJava(
-        manifest: Map<String, Int>,
+        manifest: Map<String, ElementType>,
         mappings: List<TypeMapping>,
         manifestFile: java.io.File
     ): String {
@@ -231,7 +254,7 @@ abstract class IreeDataTypeCodegen : DefaultTask() {
         sb.appendLine("    // IREE element type constants")
         val sortedMappings = mappings.sortedBy { it.iree }
         for (m in sortedMappings) {
-            val value = manifest[m.iree]!!
+            val value = manifest[m.iree]!!.value
             val hex = "0x${value.toUInt().toString(16).uppercase()}"
             sb.appendLine("    public static final int ${m.iree} = $value; // $hex")
         }
