@@ -42,6 +42,12 @@ class ModelResolverTest {
         return file.toString();
     }
 
+    // Path.toString() on Windows uses backslashes, which are JSON escape
+    // characters — embed paths via this so the manifest stays valid on both OSes.
+    private static String jsonEscape(String s) {
+        return s.replace("\\", "\\\\").replace("\"", "\\\"");
+    }
+
     private static ResolvedModel resolve(Path modelPath, String prefix, IreeLoadOptions options)
             throws IOException {
         return ModelResolver.resolve(modelPath, prefix, options);
@@ -217,7 +223,7 @@ class ModelResolverTest {
                 tempDir.resolve("a/manifest.json"),
                 """
                 {"schemaVersion":1,"program":"x.vmfb","parameters":{"m":"%s"}}
-                """.formatted(tempDir.resolve("a/weights.irpa")));
+                """.formatted(jsonEscape(tempDir.resolve("a/weights.irpa").toString())));
         touch(tempDir.resolve("a/x.vmfb"));
 
         ResolvedModel r = resolve(tempDir.resolve("a/manifest.json"), "ignored", DEFAULTS);
@@ -231,7 +237,7 @@ class ModelResolverTest {
                 tempDir.resolve("a/manifest.json"),
                 """
                 {"schemaVersion":1,"program":"x.vmfb","parameters":{"m":"%s"}}
-                """.formatted(tempDir.resolve("x.irpa")));
+                """.formatted(jsonEscape(tempDir.resolve("x.irpa").toString())));
         touch(tempDir.resolve("a/x.vmfb"));
 
         ManifestException e =
