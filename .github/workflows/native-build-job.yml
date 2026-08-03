@@ -73,8 +73,95 @@ jobs:
             ${{ github.workspace }}/src/main/resources/native/**/licenses/**
           compression-level: 1 # May want to consider no compression
 
-  # Future note
-  # Windows amd64: a sibling job rather than a matrix row, because the linux rows are container-based
-  # (manylinux bakes the glibc floor into the image) and Windows has no container. Both jobs upload
-  # under the iree-libs-* pattern, so publish.yml and native-build.yml consume them unchanged.
-  # A future macOS platform would follow this same shape. 
+  # Windows amd64: a sibling job rather than a matrix row, because the linux rows are
+  # container-based (manylinux bakes the glibc floor into the image) and Windows has no
+  # container. Both jobs upload under the iree-libs-* pattern, so publish.yml and
+  # native-build.yml consume them unchanged. A future macOS platform follows this shape.
+  build-iree-shim-windows:
+    runs-on: windows-2022
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout djl-iree-engine repository
+        uses: actions/checkout@v7
+
+      # Provenance gate: prove the pinned runtime tarball was built by Repo A's CI before we
+      # link against it. URL_HASH in native/CMakeLists.txt covers integrity; this covers
+      # provenance. IreeRuntimePin.cmake has exactly ONE Windows row, so the plain pattern
+      # needs no -static disambiguation (unlike ExecuTorch's pin file).
+      - name: Verify IREE runtime provenance
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          url="$(grep -oE 'https://[^"]*default-windows-x86_64\.tar\.gz' native/cmake/IreeRuntimePin.cmake | head -1)"
+          test -n "${url}" || { echo "no default URL in IreeRuntimePin.cmake"; exit 1; }
+          curl -fL -o runtime.tgz "${url}"
+          gh attestation verify runtime.tgz --repo measly-java-learning/iree-runtime-dist
+          rm -f runtime.tgz
+
+      # Resolve the VS install ONCE and publish it to $GITHUB_ENV for the steps below.
+      # Discovery is edition-agnostic (-products *) so a runner-image edition change does
+      # not silently break the build. Add-Content, NOT `Out-File -Encoding utf8`: under
+      # Windows PowerShell 5.1 that writes a UTF-8 BOM, and a BOM in GITHUB_ENV makes the
+      # runner parse the name as "<BOM>VS_PATH", so $env:VS_PATH is empty in every later
+      # step. Only DISCOVERY is hoisted, not ACTIVATION: Launch-VsDevShell mutates the
+      # current process env, and each step runs in a fresh process, so every step that
+      # needs `cl` must still activate.
+      - name: Discover Visual Studio
+        shell: pwsh
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vsPath = & $vswhere -latest -products * -property installationPath
+          if (-not $vsPath) { throw "vswhere found no Visual Studio installation" }
+          Add-Content -Path $env:GITHUB_ENV -Value "VS_PATH=$vsPath"
+          echo "Visual Studio: $vsPath"
+
+      - name: Build the iree_djl shim (MSVC)
+        shell: pwsh
+        run: |
+          if (-not $env:VS_PATH) { throw "VS_PATH unset — the 'Discover Visual Studio' step must run first" }
+          & "$env:VS_PATH\Common7\Tools\Launch-VsDevShell.ps1" -Arch amd64 -SkipAutomaticLocation
+          # Bind JAVA_HOME explicitly to the image's JDK 8 (JAVA_HOME_8_X64): the default
+          # JAVA_HOME is an image property GitHub can change, and we want the oldest
+          # supported jni.h for the widest runtime compatibility — matching the Linux rows'
+          # Corretto 8 RPM. We compile against jni.h only and never link libjvm.
+          if (-not $env:JAVA_HOME_8_X64) { throw "JAVA_HOME_8_X64 not set on this runner image" }
+          $env:JAVA_HOME = $env:JAVA_HOME_8_X64
+          # Invoke Git-Bash by explicit path so PATH order cannot select WSL's
+          # System32\bash.exe, which would run the build in a Linux environment with no MSVC
+          # toolchain. Non-login (`-c`, not `-lc`): a login shell re-sources the profile and
+          # resets PATH, dropping the VS env.
+          $bash = "${env:ProgramFiles}\Git\bin\bash.exe"
+          & $bash -c './native/build.sh'
+          if ($LASTEXITCODE -ne 0) { throw "shim build failed (exit $LASTEXITCODE)" }
+
+      - name: QA the iree_djl shim (MSVC)
+        shell: pwsh
+        run: |
+          if (-not $env:VS_PATH) { throw "VS_PATH unset — the 'Discover Visual Studio' step must run first" }
+          & "$env:VS_PATH\Common7\Tools\Launch-VsDevShell.ps1" -Arch amd64 -SkipAutomaticLocation
+          $bash = "${env:ProgramFiles}\Git\bin\bash.exe"
+          & $bash -c './native/build_qa.sh'
+          if ($LASTEXITCODE -ne 0) { throw "shim QA failed (exit $LASTEXITCODE)" }
+
+      # Stands in for the clean-image redist test, which we have no machine to run: asserts
+      # the CRT directives across the shim tree and that the DLL imports no VCRUNTIME/MSVCP.
+      # Runs before the upload so a dynamically-linked DLL is never published as an artifact.
+      - name: Assert the shim links the static CRT (MSVC)
+        shell: pwsh
+        run: |
+          if (-not $env:VS_PATH) { throw "VS_PATH unset — the 'Discover Visual Studio' step must run first" }
+          & "$env:VS_PATH\Common7\Tools\Launch-VsDevShell.ps1" -Arch amd64 -SkipAutomaticLocation
+          $bash = "${env:ProgramFiles}\Git\bin\bash.exe"
+          & $bash -c './native/tests/check_windows_crt.sh native/build src/main/resources/native/windows-x86_64/iree_djl.dll'
+          if ($LASTEXITCODE -ne 0) { throw "windows CRT check failed (exit $LASTEXITCODE)" }
+
+      - name: Store iree_djl shim
+        uses: actions/upload-artifact@v7
+        with:
+          name: iree-libs-windows-x86_64
+          path: |
+            ${{ github.workspace }}/src/main/resources/native/**/*.dll
+            ${{ github.workspace }}/src/main/resources/native/**/licenses/**
+          compression-level: 1
