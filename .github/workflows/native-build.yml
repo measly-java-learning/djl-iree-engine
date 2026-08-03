@@ -40,6 +40,11 @@ jobs:
         # Debug print
         - run: tree -h src/main/resources/native
 
+        # Download the iree-runtime-dist metadata zip (tag+repo derived from
+        # native/cmake/IreeRuntimePin.cmake; gh auto-auths via GITHUB_TOKEN).
+        - name: Fetch iree-runtime-dist metadata
+          run: bash tools/fetch-iree-metadata.sh
+
         # https://github.com/gradle/actions
         # This has enhanced caching 
         - name: Setup Gradle

@@ -16,10 +16,14 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_LIST_DIR}/cmake")
 # then point find_package() at the extracted prefix.
 include(IreeRuntimePin)
 
+# linux-x86_64, default variant only. The helper fails fast if the pin lacks this
+# variant/platform pair; unused variants in the pin download nothing.
+iree_runtime_dist_url("default" "linux-x86_64" _iree_runtime_url _iree_runtime_sha)
+
 include(FetchContent)
 FetchContent_Declare(iree_runtime_dist
-    URL      "${IREE_RUNTIME_URL_default_linux-x86_64}"
-    URL_HASH SHA256=${IREE_RUNTIME_SHA256_default_linux-x86_64}
+    URL      "${_iree_runtime_url}"
+    URL_HASH SHA256=${_iree_runtime_sha}
 )
 FetchContent_MakeAvailable(iree_runtime_dist)
 

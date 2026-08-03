@@ -18,7 +18,7 @@
 #
 # Produces add.vmfb using pip's iree-compile.
 #
-# The engine now links the published `iree-runtime-dist` v3.11.0-3 artifact
+# The engine now links the published `iree-runtime-dist` artifact
 # (native/cmake/IreeRuntimePin.cmake), not a local IREE source build. There is
 # no local IREE tree and no local iree-compile to enable: the dist ships
 # IREE_BUILD_COMPILER=OFF by design (it is a runtime-only artifact) and pip

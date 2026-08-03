@@ -1,3 +1,6 @@
+import java.io.FileNotFoundException
+import java.util.Properties
+
 plugins {
     `java-library`
     jacoco
@@ -28,10 +31,49 @@ dependencies {
     testRuntimeOnly(libs.junit.platform.launcher)
 }
 
+// --- Codegen manifest resolution ---
+//
+// Single source of truth for the release is native/cmake/IreeRuntimePin.cmake.
+// tools/fetch-iree-metadata.sh reads it, downloads the metadata zip via `gh release download`,
+// and writes third-party/iree-runtime-metadata.properties (zip path + tag). Gradle consumes
+// that properties file; there is no version literal in this file. Run
+// `bash tools/fetch-iree-metadata.sh` once before building.
+//
+// Declared before tasks.test: the test task's configuration action below reads
+// ireeElementTypesPath, and Gradle may run it before later top-level declarations
+// are initialized.
+val ireeMetadataProps = file("third-party/iree-runtime-metadata.properties")
+
+val ireeElementTypesOverride = findProperty("ireeElementTypes") as String?
+val ireeMetadata = Properties()
+if (ireeElementTypesOverride == null) {
+    try {
+        ireeMetadataProps.inputStream().use { ireeMetadata.load(it) }
+    } catch (e: FileNotFoundException) {
+        throw GradleException(
+            "iree-runtime-dist metadata properties not found at $ireeMetadataProps\n" +
+                "Run the one-time prerequisite first:\n" +
+                "  bash tools/fetch-iree-metadata.sh   # requires gh CLI (https://cli.github.com/)"
+        )
+    }
+}
+val ireeMetadataZip = file(
+    ireeMetadata.getProperty("ireeRuntimeMetadataZip", "third-party/iree-runtime-metadata.zip")
+)
+val ireeMetadataDir = layout.buildDirectory.dir("iree-metadata")
+
+val ireeElementTypesPath = ireeElementTypesOverride
+    ?: ireeMetadataDir.get().file("element_types.json").asFile.path
+
 tasks.test {
     useJUnitPlatform { excludeTags("leak") }
     jvmArgs("-XX:+HeapDumpOnOutOfMemoryError")
     finalizedBy(tasks.jacocoTestReport)
+    // IreeDataTypesTest validates the codegen against the same manifest/mappings it consumed.
+    // ireeElementTypesPath is declared above (see the codegen comment) because this
+    // configuration action runs before later top-level declarations are initialized.
+    systemProperty("ireeElementTypes", ireeElementTypesPath)
+    systemProperty("ireeTypeMappings", file("gradle/iree-type-mappings.json").path)
 }
 
 tasks.register<Test>("leakTest") {
@@ -52,35 +94,34 @@ tasks.jacocoTestReport {
     }
 }
 
-// --- Codegen: IreeDataTypes from the iree-runtime-dist element_types.json ---
+// --- Codegen: IreeDataTypes from the iree-runtime-metadata zip ---
 //
-// The dist publishes this manifest inside the CMake build tree (FetchContent's
-// extraction dir). Gradle cannot see CMake variables (IREE_RUNTIME_DIST_ELEMENT_TYPES
-// is a CMake-only value), so we resolve the path pragmatically here instead: default
-// to the known FetchContent layout, but let -PireeElementTypes=<path> override it so
-// the build isn't hostage to that internal layout if it ever changes.
-//
-// We deliberately read straight out of native/build/_deps/... rather than asking the
-// native/ CMake build to copy the file to a stable location first: changing native/ is
-// out of scope for this task, and the override property already gives callers an escape
-// hatch from the coupling without touching CMake.
-//
-// Parsing, validation, and code generation live in the IreeDataTypeCodegen task class
-// (buildSrc/) so this file stays lean. Type mappings between IREE element type names
-// and DJL DataType enum constants live in gradle/iree-type-mappings.json.
+// Single source of truth for the release is native/cmake/IreeRuntimePin.cmake; the manifest
+// resolution happens above (see the comment before tasks.test) because the test task consumes
+// ireeElementTypesPath at configuration time.
 
-val ireeElementTypesPath: String =
-    (findProperty("ireeElementTypes") as String?)
-        ?: project.files(
-            fileTree("src/main/resources/native") { include("**/element_types.json") },
-            fileTree("build/native-staging") { include("**/element_types.json") },
-        ).firstOrNull()?.path
-            ?: "${projectDir}/native/build/_deps/iree_runtime_dist-src/share/iree-runtime-dist/element_types.json"
+val syncIreeMetadata = tasks.register<Sync>("syncIreeMetadata") {
+    inputs.file(ireeMetadataProps)
+    from(zipTree(ireeMetadataZip))
+    into(ireeMetadataDir)
+    // Resolve to a plain File local so the execution closure captures only File + String
+    // (config-cache safe), not the enclosing script.
+    val zip = ireeMetadataZip
+    doFirst {
+        require(zip.isFile) {
+            "iree-runtime-dist metadata zip not found at $zip\n" +
+                "Re-run the prerequisite: bash tools/fetch-iree-metadata.sh"
+        }
+    }
+}
 
 val generatedIreeSourcesDir = layout.buildDirectory.dir("generated/sources/iree")
 
 val generateIreeDataTypes = tasks.register<IreeDataTypeCodegen>("generateIreeDataTypes") {
-    description = "Generates IreeDataTypes.java from the iree-runtime-dist element_types.json manifest."
+    // With an explicit -PireeElementTypes override, don't require the properties file.
+    if (ireeElementTypesOverride == null) {
+        dependsOn(syncIreeMetadata)
+    }
     elementTypesManifest.set(file(ireeElementTypesPath))
     typeMappings.set(file("gradle/iree-type-mappings.json"))
     outputDir.set(generatedIreeSourcesDir)

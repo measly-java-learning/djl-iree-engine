@@ -53,12 +53,17 @@ There is only one platform today; the capability form exists so a second platfor
 
 ## Prerequisites
 
-The engine consumes the published `iree-runtime-dist` v3.11.0-3 artifact — a hash-pinned tarball
+The engine consumes the published `iree-runtime-dist` artifact pinned in
+`native/cmake/IreeRuntimePin.cmake` — a hash-pinned tarball
 of 198 static archives, fetched and verified by CMake at configure time. There is **no IREE
 source tree, no IREE build tree, and no compiler required** to build or test this engine:
 
 - JDK 17 (e.g. `/usr/lib/jvm/zulu-17-amd64`) — set `JAVA_HOME` to it.
 - CMake, Ninja, and a C++20 (gcc/clang) compiler.
+- One-time prerequisite — `bash tools/fetch-iree-metadata.sh` (requires the `gh` CLI —
+  https://cli.github.com/ — installed and authenticated). It derives the release from
+  `native/cmake/IreeRuntimePin.cmake` (the single source of truth) and feeds
+  `generateIreeDataTypes`.
 - Network access, to fetch the pinned `iree-runtime-dist` tarball (SHA256-verified against
   `native/cmake/IreeRuntimePin.cmake`; a tampered hash fails hard at configure time). The
   native *test* build additionally fetches Catch2 (v3.5.2) via `FetchContent`'s
