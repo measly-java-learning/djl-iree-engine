@@ -282,9 +282,14 @@ IREE_TARGET_TRIPLE=x86_64-unknown-unknown-eabi-elf bash tools/export_add.sh
 ```
 
 The explicit triple is passed for reproducibility of intent, matching how the
-`aarch64` fixtures were produced. It also pins the exact bytes: the compiler is
-deterministic given fixed flags, but omitting the triple flag produces a
-slightly different (still correct) module.
+`aarch64` fixtures were produced. On x86_64 it makes no difference to the
+output — verified byte-identical (same SHA-256) with and without the flag —
+because the shipped `export_add.sh` always compiles for `cpu = "generic"`
+regardless of `IREE_TARGET_TRIPLE`. The real hazard the explicit triple guards
+against is cross-architecture: on a NON-x86_64 host (e.g. aarch64), omitting
+`IREE_TARGET_TRIPLE` defaults to the host triple and silently overwrites this
+x86_64 fixture with an aarch64-targeted one. Always set the triple explicitly
+when regenerating.
 
 Expected tail of output — the script self-verifies the entry point:
 

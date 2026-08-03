@@ -57,21 +57,29 @@ fi
 # --iree-hal-target-device / --iree-hal-local-target-device-backends are the
 # current (3.11.0) flag spelling and were confirmed to work; an older
 # compiler might need the legacy --iree-hal-target-backends=llvm-cpu spelling
-# instead. --iree-llvmcpu-target-cpu=host silences the "generic CPU" perf
-# warning; the fixture is only ever run on the machine that produced it.
-# IREE_TARGET_TRIPLE switches to a cross-compiled build (target-cpu=generic,
-# since "host" is meaningless across architectures) -- used for the committed
-# per-arch fixtures.
+# instead.
+#
+# target-cpu=generic ALWAYS, matching export_scale.sh. This fixture is committed
+# to the repository and runs on every contributor's machine and every CI runner,
+# not just the one that produced it. A previous version used target-cpu=host,
+# which baked the producer's AVX-512 (cpu = "tigerlake") into the embedded
+# executable and made the fixture crash with an illegal instruction on any host
+# without AVX-512. tools/check_fixture_portability.sh guards against a repeat.
+# The generic-CPU perf warning is expected and irrelevant: this fixture adds two
+# 4-element vectors.
+#
+# IREE_TARGET_TRIPLE adds a cross-compilation target, used for the committed
+# per-arch fixtures (see src/test/resources/models/aarch64/).
+TRIPLE_ARGS=()
 if [[ -n "${IREE_TARGET_TRIPLE:-}" ]]; then
-  TARGET_FLAGS=(--iree-llvmcpu-target-cpu=generic --iree-llvmcpu-target-triple="${IREE_TARGET_TRIPLE}")
-else
-  TARGET_FLAGS=(--iree-llvmcpu-target-cpu=host)
+  TRIPLE_ARGS+=(--iree-llvmcpu-target-triple="${IREE_TARGET_TRIPLE}")
 fi
 
 "${IREE_COMPILE}" \
   --iree-hal-target-device=local \
   --iree-hal-local-target-device-backends=llvm-cpu \
-  "${TARGET_FLAGS[@]}" \
+  --iree-llvmcpu-target-cpu=generic \
+  "${TRIPLE_ARGS[@]}" \
   "${here}/add.mlir" -o "${out}"
 
 echo "wrote ${out}"

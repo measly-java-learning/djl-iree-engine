@@ -23,6 +23,18 @@ jobs:
     needs: build-iree-shim
     steps:
         - uses: actions/checkout@v7
+
+        # Fixture portability: every committed .vmfb must carry cpu = "generic" and an
+        # OS-agnostic embedded-ELF triple, so it runs on any CPU of its architecture and
+        # any OS. Pure file inspection — no toolchain needed, so it sits in the Java job
+        # rather than the native matrix (kept out of native-build-job.yml to avoid
+        # conflicting with planned Windows amd64 work there). It still waits on
+        # build-iree-shim's full container matrix via `needs`, but within this job it
+        # runs before every other step: a bad fixture fails in seconds, not after the
+        # rest of build-java-package's work.
+        - name: Check fixture portability
+          run: bash tools/check_fixture_portability.sh
+
         - uses: actions/setup-java@v5.6.0
           with:
             distribution: zulu
