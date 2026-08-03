@@ -2,8 +2,10 @@
 
 A [DJL](https://djl.ai/) engine that runs [IREE](https://iree.dev/) `.vmfb` models.
 
-**Status: walking skeleton.** This exists to answer whether IREE works as a DJL engine and
-at what cost. It runs a trivial `add` model end to end and answers the go/no-go question in
+**Status: walking skeleton with manifest loading.** This exists to answer whether IREE works
+as a DJL engine and at what cost. It runs a trivial `add` model end to end, and `Model.load`
+accepts a model artifact that names a `.vmfb` plus scope-bound `.irpa` parameter archives in a
+manifest JSON document. The go/no-go question is answered in
 `docs/superpowers/specs/2026-07-19-djl-iree-engine-findings.md` (verdict: **GO**). It is
 not a product — see the deferred list in the design doc and the findings doc. Linux-x86_64
 only.
@@ -70,6 +72,62 @@ runtime (`e4a3b040`, stable tag `v3.11.0`) per its `manifest.json` — no more n
 pip `iree-base-runtime` wheel is still not usable at any version; it ships no headers and no
 linkable library, which is exactly why the dist artifact exists.
 
+## Model manifests (parameters)
+
+`Model.load` can pull weights from IREE parameter archives (`.irpa`) alongside the `.vmfb`: the
+model artifact names them in a manifest JSON document, and each archive is bound to the runtime
+scope the compiled program references. Two obligations before you start:
+
+- **Unarchive before loading.** This engine accepts no zip/tar and extracts nothing on the
+  caller's behalf. A zipped `.irpa` must be materialised in full first; path-passing exists
+  precisely to avoid whole-archive I/O.
+- **Compile `.vmfb` for a baseline CPU target.** A program built with
+  `--iree-llvmcpu-target-cpu=host` on a modern machine faults with an illegal instruction
+  (SIGILL) on an older one. Compile for a baseline target until tier selection exists.
+
+### Manifest schema (v1)
+
+```json
+{
+  "schemaVersion": 1,
+  "program": "model.vmfb",
+  "entryPoint": "module.main",
+  "parameters": {
+    "model": "weights.irpa",
+    "bias":  "bias.irpa"
+  }
+}
+```
+
+`schemaVersion` and `program` are required — the version must be a JSON integer and is never
+assumed when absent; `entryPoint` and `parameters` are optional (an absent `parameters` is
+equivalent to `{}`). Unknown fields are ignored, so the format can add keys without breaking
+this engine. Every path the manifest names is resolved against the manifest's own directory,
+must exist, and must stay inside that directory — checked on the resolved real path, so a
+symlink escape is caught too.
+
+### Where `Model.load` looks
+
+| `modelPath` | Behaviour |
+|---|---|
+| A regular file | Parsed as a manifest, whatever its name. |
+| A directory containing `djl-iree-model.json` | That file is parsed. |
+| A directory with no manifest but a `<prefix>.vmfb` | Implicit single-program, zero-parameter manifest (the pre-manifest behaviour). |
+| A directory with neither | Error naming the directory and both things sought. |
+
+### Load options
+
+| Option | Source | Default |
+|---|---|---|
+| `entryPoint` | load option > manifest > default | `"module.main"` |
+| `device` | load option only | `"local-sync"` |
+| `allowUnsafePaths` | load option only | `false` |
+
+`entryPoint` names a function of the compiled artifact, so the manifest is its natural home; the
+caller keeps an override because a `.vmfb` may export several. `device` and `allowUnsafePaths`
+are policy and never read from a manifest. `allowUnsafePaths` opts out of the containment check
+above by name — a manifest can never authorize its own path escapes.
+
 ## Build and test
 
 ```bash
@@ -78,8 +136,10 @@ linkable library, which is exactly why the dist artifact exists.
 JAVA_HOME=/usr/lib/jvm/zulu-17-amd64 ./gradlew test    # JVM tests
 ```
 
-The JVM suite is 5 tests: `IreeNativeTest` (×4) and `AddModelIT` (×1), which runs `add.vmfb`
-through a real DJL `Predictor` and checks the output `[11, 22, 33, 44]`.
+The JVM suite: `IreeNativeTest` (JNI boundary, including the scale/scale2 parameter-archive
+loads), `AddModelIT` (the implicit bare-`.vmfb` door), `ModelManifestTest` (schema rules),
+`ModelResolverTest` (front doors + containment), and `ScaleModelIT` (manifest directory end to
+end → `[2, 4, 6, 8]`).
 
 ## Native QA
 
@@ -159,6 +219,7 @@ tied to the runtime pin (`native/cmake/IreeRuntimePin.cmake`); refresh it when t
 - Design: `docs/superpowers/specs/2026-07-19-djl-iree-engine-skeleton-design.md`
 - Findings (the go/no-go writeup): `docs/superpowers/specs/2026-07-19-djl-iree-engine-findings.md`
 - Plan: `docs/superpowers/plans/2026-07-19-djl-iree-engine-skeleton.md`
+- IRPA manifest loading (this chunk): `docs/superpowers/specs/2026-08-02-irpa-manifest-loading-design.md`
 - Wishlist for the dist project, with delivered/open status:
   `docs/superpowers/specs/iree-runtime-dist-wishlist.md`
 - `iree-runtime-dist` handover (what the artifact actually ships):

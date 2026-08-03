@@ -14,9 +14,17 @@ public final class IreeNative {
 
     /**
      * Returns an opaque handle to the native runtime. Caller must close it.
-     * {@code device} selects the IREE driver, e.g. "local-sync" or "local-task".
+     * {@code device} selects the IREE HAL driver, e.g. "local-sync" or "local-task".
+     * {@code paramScopes}/{@code paramPaths} are parallel arrays pairing each parameter
+     * archive's runtime scope name with its file path; empty for a model without parameters.
      */
-    public static native long load(byte[] vmfb, String entryPoint, String device);
+    public static native long load(byte[] vmfb, String entryPoint, String device,
+                                   String[] paramScopes, String[] paramPaths);
+
+    /** Convenience overload for models without parameters. */
+    public static long load(byte[] vmfb, String entryPoint, String device) {
+        return load(vmfb, entryPoint, device, new String[0], new String[0]);
+    }
 
     /**
      * Runs the model. Inputs must be direct ByteBuffers; their addresses are
