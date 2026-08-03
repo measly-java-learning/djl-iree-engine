@@ -14,7 +14,7 @@ set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(git -C "${here}" rev-parse --show-toplevel)"
-out_dir="${repo_root}/src/test/resources/models"
+out_dir="${IREE_FIXTURE_DIR:-${repo_root}/src/test/resources/models}"
 mkdir -p "${out_dir}"
 
 IREE_COMPILE="${IREE_COMPILE:-${repo_root}/.venv/bin/iree-compile}"
@@ -28,12 +28,19 @@ for tool in "${IREE_COMPILE}" "${IREE_CREATE_PARAMS}"; do
   fi
 done
 
-# target-cpu=generic keeps the fixture runnable on any x86-64 host and silences
-# the generic-CPU perf warning. Perf is irrelevant here.
+# target-cpu=generic keeps the fixture runnable on any host and silences
+# the generic-CPU perf warning. Perf is irrelevant here. IREE_TARGET_TRIPLE
+# adds a cross-compilation target for the committed per-arch fixtures.
+TRIPLE_ARGS=()
+if [[ -n "${IREE_TARGET_TRIPLE:-}" ]]; then
+  TRIPLE_ARGS+=(--iree-llvmcpu-target-triple="${IREE_TARGET_TRIPLE}")
+fi
+
 "${IREE_COMPILE}" \
   --iree-hal-target-device=local \
   --iree-hal-local-target-device-backends=llvm-cpu \
   --iree-llvmcpu-target-cpu=generic \
+  "${TRIPLE_ARGS[@]}" \
   "${here}/scale.mlir" -o "${out_dir}/scale.vmfb"
 
 # Splat: value 2.0, NO on-disk storage. Used by the wiring/math tests.
@@ -59,6 +66,7 @@ done
   --iree-hal-target-device=local \
   --iree-hal-local-target-device-backends=llvm-cpu \
   --iree-llvmcpu-target-cpu=generic \
+  "${TRIPLE_ARGS[@]}" \
   "${here}/scale2.mlir" -o "${out_dir}/scale2.vmfb"
 
 # Second archive, bound under a different scope at load time.

@@ -7,14 +7,15 @@ as a DJL engine and at what cost. It runs a trivial `add` model end to end, and 
 accepts a model artifact that names a `.vmfb` plus scope-bound `.irpa` parameter archives in a
 manifest JSON document. The go/no-go question is answered in
 `docs/superpowers/specs/2026-07-19-djl-iree-engine-findings.md` (verdict: **GO**). It is
-not a product — see the deferred list in the design doc and the findings doc. Linux-x86_64
-only.
+not a product — see the deferred list in the design doc and the findings doc. Linux (x86_64
+and aarch64) only.
 
 ### Supported platforms
 
 | Platform | Artifact | HAL driver | QA |
 |---|---|---|---|
 | `linux-x86_64` | `libiree_djl.so` | `local-sync` (default), `local-task` | Catch2 + ASan/LSan leak harness; TSan (see [Native QA](#native-qa)) |
+| `linux-aarch64` | `libiree_djl.so` | `local-sync` (default), `local-task` | Catch2 + ASan/LSan leak harness |
 
 The native library ships in a per-platform classifier jar (`<artifact>-<platform>.jar`) and is
 extracted on first load to a temp file (`java.io.tmpdir`), deleted on JVM exit. Set
@@ -31,6 +32,8 @@ consumers should request the platform by capability rather than by classifier:
 dependencies {
     implementation("org.measly:djl-iree-engine:<version>")
     runtimeOnly("org.measly:djl-iree-engine:<version>") {
+        // Pick the platform that matches the runtime host:
+        // linux-x86_64 or linux-aarch64
         capabilities { requireCapability("org.measly:djl-iree-engine-linux-x86_64") }
     }
 }
@@ -48,8 +51,9 @@ Maven consumers add the classifier form alongside the main (classifier-less) dep
 </dependency>
 ```
 
-There is only one platform today; the capability form exists so a second platform (e.g.
-`windows-x86_64`) can land later without breaking consumers already pinned to a capability.
+The same capability/classifier shape applies to `linux-aarch64` (use
+`requireCapability("org.measly:djl-iree-engine-linux-aarch64")` or
+`<classifier>linux-aarch64</classifier>`) on aarch64 hosts.
 
 ## Prerequisites
 

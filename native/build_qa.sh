@@ -15,6 +15,17 @@ cd "${REPO_ROOT}"
 
 ITERS="${ITERS:-1000}"
 
+# Fixtures are per-arch: .vmfb embeds an arch-specific ELF executable, so the
+# harness must load the fixture set matching this host (the Catch2 targets get
+# their paths from CMake compile definitions, which are already arch-aware;
+# the harness takes paths on argv). The .irpa files are arch-neutral data and
+# ship in both fixture dirs.
+case "$(uname -m)" in
+  x86_64|amd64)  FIXTURE_DIR="src/test/resources/models" ;;
+  aarch64|arm64) FIXTURE_DIR="src/test/resources/models/aarch64" ;;
+  *) echo "unsupported arch: $(uname -m)" >&2; exit 1 ;;
+esac
+
 # QA is the only ASan consumer; install the toolset's ASan runtime here.
 if command -v dnf >/dev/null 2>&1; then
   echo "--- Installing ASan runtime (dnf), may appear to hang ---"
@@ -37,13 +48,13 @@ echo "--- Catch2 parameter suite ---"
 ./native/qa/iree_params_test
 
 echo "--- ASan/LSan leak harness (${ITERS} iterations, local-sync) ---"
-./native/qa/iree_leak_harness src/test/resources/models/add.vmfb "${ITERS}"
+./native/qa/iree_leak_harness "${FIXTURE_DIR}/add.vmfb" "${ITERS}"
 
 echo "--- ASan/LSan leak harness (${ITERS} iterations, local-task worker pool) ---"
-./native/qa/iree_leak_harness src/test/resources/models/add.vmfb "${ITERS}" local-task
+./native/qa/iree_leak_harness "${FIXTURE_DIR}/add.vmfb" "${ITERS}" local-task
 
 echo "--- ASan/LSan leak harness (${ITERS} iterations, parameter-bound, local-sync) ---"
-./native/qa/iree_leak_harness src/test/resources/models/scale.vmfb "${ITERS}" local-sync \
-  model=src/test/resources/models/scale_weights_zero.irpa
+./native/qa/iree_leak_harness "${FIXTURE_DIR}/scale.vmfb" "${ITERS}" local-sync \
+  model="${FIXTURE_DIR}/scale_weights_zero.irpa"
 
 echo "--- native QA PASS ---"

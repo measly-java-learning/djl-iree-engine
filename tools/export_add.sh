@@ -42,8 +42,9 @@ set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(git -C "${here}" rev-parse --show-toplevel)"
-out="${here}/../src/test/resources/models/add.vmfb"
-mkdir -p "$(dirname "${out}")"
+out_dir="${IREE_FIXTURE_DIR:-${repo_root}/src/test/resources/models}"
+out="${out_dir}/add.vmfb"
+mkdir -p "${out_dir}"
 
 IREE_COMPILE="${IREE_COMPILE:-$(command -v iree-compile || echo "${repo_root}/.venv/bin/iree-compile")}"
 
@@ -58,10 +59,19 @@ fi
 # compiler might need the legacy --iree-hal-target-backends=llvm-cpu spelling
 # instead. --iree-llvmcpu-target-cpu=host silences the "generic CPU" perf
 # warning; the fixture is only ever run on the machine that produced it.
+# IREE_TARGET_TRIPLE switches to a cross-compiled build (target-cpu=generic,
+# since "host" is meaningless across architectures) -- used for the committed
+# per-arch fixtures.
+if [[ -n "${IREE_TARGET_TRIPLE:-}" ]]; then
+  TARGET_FLAGS=(--iree-llvmcpu-target-cpu=generic --iree-llvmcpu-target-triple="${IREE_TARGET_TRIPLE}")
+else
+  TARGET_FLAGS=(--iree-llvmcpu-target-cpu=host)
+fi
+
 "${IREE_COMPILE}" \
   --iree-hal-target-device=local \
   --iree-hal-local-target-device-backends=llvm-cpu \
-  --iree-llvmcpu-target-cpu=host \
+  "${TARGET_FLAGS[@]}" \
   "${here}/add.mlir" -o "${out}"
 
 echo "wrote ${out}"
