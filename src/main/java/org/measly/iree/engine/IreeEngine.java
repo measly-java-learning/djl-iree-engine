@@ -35,9 +35,18 @@ public final class IreeEngine extends Engine {
         return RANK;
     }
 
+    /**
+     * The engine version, accessible without loading the native library.
+     * {@link #getVersion()} delegates here so manifest error messages can name
+     * the version from a pure unit; {@code newInstance()} loads the library.
+     */
+    static String getEngineVersion() {
+        return "0.1.0-SNAPSHOT";
+    }
+
     @Override
     public String getVersion() {
-        return "0.1.0-SNAPSHOT";
+        return getEngineVersion();
     }
 
     @Override

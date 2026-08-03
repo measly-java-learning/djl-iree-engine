@@ -4,6 +4,11 @@
 #include "core/iree_handles.h"
 #include "core/iree_status.h"
 #include "iree/hal/buffer_view_util.h"
+#include "iree/io/file_handle.h"
+#include "iree/io/formats/parser_registry.h"
+#include "iree/io/parameter_index.h"
+#include "iree/io/parameter_index_provider.h"
+#include "iree/modules/io/parameters/module.h"
 #include "iree/runtime/api.h"
 
 namespace measly::iree {
@@ -16,6 +21,14 @@ struct RuntimeState {
   std::string entryPoint;
   InstancePtr instance;
   DevicePtr device;
+  // No parameter-chain members here. IREE retains every level of the chain
+  // internally (file handle <- index <- provider <- io_parameters module <-
+  // session/context), so the caller holds none of it -- the file/index/
+  // provider/module are scoped locally inside Load's parameter-loading block
+  // and released before Load returns. Maintainer rule: IREE retains every
+  // level; hold nothing. Verified under ASan by deliberate-drop probing; see
+  // the ownership table and the FILE-backed differential in
+  // docs/2026-07-25-irpa-spike-findings.md for the full evidence.
   SessionPtr session;
   std::vector<IreeRuntime::ImportOutcome> lastImportOutcomes;
 };
@@ -27,6 +40,12 @@ IreeRuntime::~IreeRuntime() = default;
 std::unique_ptr<IreeRuntime> IreeRuntime::Load(std::span<const std::byte> vmfb,
                                                std::string_view entryPoint,
                                                std::string_view driver) {
+  return Load(vmfb, entryPoint, driver, std::span<const ParameterScope>{});
+}
+
+std::unique_ptr<IreeRuntime> IreeRuntime::Load(
+    std::span<const std::byte> vmfb, std::string_view entryPoint,
+    std::string_view driver, std::span<const ParameterScope> parameters) {
   auto state = std::make_unique<RuntimeState>();
   state->vmfb.assign(vmfb.begin(), vmfb.end());
   state->entryPoint = std::string(entryPoint);
@@ -58,6 +77,95 @@ std::unique_ptr<IreeRuntime> IreeRuntime::Load(std::span<const std::byte> vmfb,
       state->instance.get(), &session_options, state->device.get(),
       iree_allocator_system(), &raw_session));
   state->session.reset(raw_session);
+
+  // Parameter archives, if any. This MUST happen before the bytecode module is
+  // appended: import resolution runs when the bytecode module is registered
+  // against the modules already in the context.
+  if (!parameters.empty()) {
+    std::vector<iree_io_parameter_provider_t*> raw_providers;
+    raw_providers.reserve(parameters.size());
+    // Locally scoped: Task 5 proved under ASan that the io_parameters module
+    // retains each provider, so nothing here needs to outlive this block.
+    std::vector<ParameterProviderPtr> scoped_providers;
+    scoped_providers.reserve(parameters.size());
+
+    for (const auto& param : parameters) {
+      // 1. Open the archive. RANDOM_ACCESS is the mode used for the pread(2)s
+      //    that later fetch parameter spans (hal/utils/fd_file.c:311) -- IREE
+      //    only mmaps this file transiently, inside iree_io_parse_file_index
+      //    below, to parse the index (irpa_parser.c:334), then unmaps it.
+      //    Locally scoped: the parameter index retains the file handle for
+      //    every FILE-backed entry it is given (verified by source reading,
+      //    io/parameter_index.c:185, FILE branch). This retain is
+      //    LOAD-BEARING, not defensive: the index stores only {handle,
+      //    offset} per entry (irpa_parser.c:140-152), so no parameter bytes
+      //    are resident yet -- they are pread() later, at io_parameters.load
+      //    time, through this same retained handle (parameter_index_provider.c:147,
+      //    fd_file.c:311). Task 7's FILE-backed differential dropped this
+      //    local handle immediately after parse, against the FILE-backed
+      //    scale_weights_zero.irpa fixture, and ASan reported no
+      //    use-after-free on the SUBSEQUENT real read through the index's
+      //    retained reference. That absent fault is the evidence: had the
+      //    retain not fired, the later pread would have hit a freed handle
+      //    and closed fd. (The golden output is the weaker half -- the
+      //    fixture is zeroed, so a silently-zeroed buffer would look
+      //    identical.) See iree_params_test.cpp's "golden vector: FILE-backed
+      //    (zeroed) archive" case and docs/2026-07-25-irpa-spike-findings.md.
+      //    Line numbers cite IREE at the pinned commit e4a3b0405d.
+      iree_io_file_handle_t* raw_file = nullptr;
+      IREE_CHECK_OR_THROW(iree_io_file_handle_open(
+          IREE_IO_FILE_MODE_READ | IREE_IO_FILE_MODE_RANDOM_ACCESS,
+          iree_make_string_view(param.path.data(), param.path.size()),
+          iree_allocator_system(), &raw_file));
+      FileHandlePtr scoped_file(raw_file);
+
+      // 2. Parse it into an index. The path is passed too so the registry can
+      //    pick a parser by extension. Locally scoped: the index provider
+      //    retains the index (verified under ASan).
+      iree_io_parameter_index_t* raw_index = nullptr;
+      IREE_CHECK_OR_THROW(
+          iree_io_parameter_index_create(iree_allocator_system(), &raw_index));
+      ParameterIndexPtr scoped_index(raw_index);
+      IREE_CHECK_OR_THROW(iree_io_parse_file_index(
+          iree_make_string_view(param.path.data(), param.path.size()),
+          scoped_file.get(), scoped_index.get(),
+          iree_allocator_system()));
+      // Explicit release right here, not left to scope-exit ordering (which
+      // would actually run at the end of this loop iteration, after step 3,
+      // since scoped_file is declared before scoped_index and destroys in
+      // reverse order). This is the exact timing Task 7's FILE-backed
+      // differential proved safe: the index has already taken its own
+      // reference to the handle inside iree_io_parse_file_index (retain at
+      // parameter_index.c:185), so nothing here needs to outlive this line.
+      scoped_file.reset();
+
+      // 3. Wrap in a provider bound to the caller's scope name.
+      iree_io_parameter_provider_t* raw_provider = nullptr;
+      IREE_CHECK_OR_THROW(iree_io_parameter_index_provider_create(
+          iree_make_string_view(param.scope.data(), param.scope.size()),
+          scoped_index.get(),
+          IREE_IO_PARAMETER_INDEX_PROVIDER_DEFAULT_MAX_CONCURRENT_OPERATIONS,
+          iree_allocator_system(), &raw_provider));
+      scoped_providers.emplace_back(raw_provider);
+      raw_providers.push_back(scoped_providers.back().get());
+    }
+
+    // 4. One module for all providers -- module_create takes an array, so
+    //    multiple scopes need one module, not several. Locally scoped: the
+    //    session/context retains the module (session.h:143, verified under
+    //    ASan), so state does not need a paramsModule field either.
+    iree_vm_module_t* raw_module = nullptr;
+    IREE_CHECK_OR_THROW(iree_io_parameters_module_create(
+        iree_runtime_instance_vm_instance(state->instance.get()),
+        raw_providers.size(), raw_providers.data(), iree_allocator_system(),
+        &raw_module));
+    VmModulePtr scoped_module(raw_module);
+
+    // 5. Append BEFORE the bytecode module.
+    IREE_CHECK_OR_THROW(iree_runtime_session_append_module(
+        state->session.get(), scoped_module.get()));
+    // scoped_module releases here, before Load returns.
+  }
 
   IREE_CHECK_OR_THROW(iree_runtime_session_append_bytecode_module_from_memory(
       state->session.get(),

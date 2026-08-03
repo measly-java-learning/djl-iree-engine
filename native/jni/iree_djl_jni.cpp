@@ -14,6 +14,7 @@
 
 using measly::iree::InputDesc;
 using measly::iree::IreeRuntime;
+using measly::iree::ParameterScope;
 
 namespace {
 
@@ -42,6 +43,30 @@ void ThrowJava(JNIEnv* env, const char* message) {
   }
 }
 
+// Marshal a Java String[] to std::vector<std::string>; a null array is empty.
+// GetObjectArrayElement returns a FRESH local reference per element and the
+// default local-ref table is small, so DeleteLocalRef as we go or a
+// many-scope manifest overflows it — the one non-obvious hazard in this file.
+std::vector<std::string> ToStringVector(JNIEnv* env, jobjectArray array) {
+  std::vector<std::string> out;
+  if (array == nullptr) return out;
+  const jsize count = env->GetArrayLength(array);
+  out.reserve(static_cast<size_t>(count));
+  for (jsize i = 0; i < count; ++i) {
+    jstring str = static_cast<jstring>(env->GetObjectArrayElement(array, i));
+    if (str == nullptr) {
+      ThrowJava(env, "parameter scope/path arrays must not contain null");
+      return {};
+    }
+    const char* utf = env->GetStringUTFChars(str, nullptr);
+    if (utf == nullptr) return {};  // OOM pending; caller checks ExceptionCheck
+    out.emplace_back(utf);
+    env->ReleaseStringUTFChars(str, utf);
+    env->DeleteLocalRef(str);
+  }
+  return out;
+}
+
 }  // namespace
 
 extern "C" JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void*) {
@@ -68,7 +93,8 @@ extern "C" JNIEXPORT void JNICALL JNI_OnUnload(JavaVM* vm, void*) {
 extern "C" JNIEXPORT jlong JNICALL
 Java_org_measly_iree_jni_IreeNative_load(JNIEnv* env, jclass,
                                          jbyteArray vmfb, jstring entryPoint,
-                                         jstring device) {
+                                         jstring device, jobjectArray paramScopes,
+                                         jobjectArray paramPaths) {
   const jsize length = env->GetArrayLength(vmfb);
   std::vector<std::byte> bytes(static_cast<size_t>(length));
   env->GetByteArrayRegion(vmfb, 0, length,
@@ -90,8 +116,24 @@ Java_org_measly_iree_jni_IreeNative_load(JNIEnv* env, jclass,
   std::string driver_copy(drv);
   env->ReleaseStringUTFChars(device, drv);
 
+  // GetArrayLength on a null array is 0, so null arrays zip to an empty span.
+  if (env->GetArrayLength(paramScopes) != env->GetArrayLength(paramPaths)) {
+    ThrowJava(env, "paramScopes and paramPaths must have the same length");
+    return 0;
+  }
+  std::vector<std::string> scope_strings = ToStringVector(env, paramScopes);
+  if (env->ExceptionCheck()) return 0;
+  std::vector<std::string> path_strings = ToStringVector(env, paramPaths);
+  if (env->ExceptionCheck()) return 0;
+
+  std::vector<ParameterScope> parameters;
+  parameters.reserve(scope_strings.size());
+  for (size_t i = 0; i < scope_strings.size(); ++i) {
+    parameters.push_back(ParameterScope{scope_strings[i], path_strings[i]});
+  }
+
   try {
-    auto runtime = IreeRuntime::Load(bytes, entry_copy, driver_copy);
+    auto runtime = IreeRuntime::Load(bytes, entry_copy, driver_copy, parameters);
     return static_cast<jlong>(reinterpret_cast<intptr_t>(runtime.release()));
   } catch (const std::exception& e) {
     ThrowJava(env, e.what());

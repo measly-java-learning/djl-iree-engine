@@ -30,6 +30,20 @@ struct OutputBuffer {
 
 struct RuntimeState;  // pimpl
 
+// One parameter archive bound to a scope name. `scope` is the name the compiled
+// program references (e.g. "model" for #stream.parameter.named<"model"::"weight">);
+// an empty scope binds the archive's global scope. `path` is a filesystem path --
+// IREE opens and owns the file descriptor and does positional reads (pread) of
+// only the spans the program imports, so the caller never has to buffer the
+// archive.
+//
+// NOTE: the scope is a RUNTIME BINDING, not a property of the archive. The same
+// .irpa can be bound under any scope name.
+struct ParameterScope {
+  std::string scope;
+  std::string path;
+};
+
 class IreeRuntime {
  public:
   enum class ImportOutcome { kWrapped, kStaged };
@@ -43,6 +57,15 @@ class IreeRuntime {
   static std::unique_ptr<IreeRuntime> Load(std::span<const std::byte> vmfb,
                                            std::string_view entryPoint,
                                            std::string_view driver = "local-sync");
+
+  // As above, but also registers parameter archives. Each archive is opened,
+  // parsed, and wrapped in a provider; all providers are composed into a single
+  // io_parameters VM module which is appended to the session BEFORE the bytecode
+  // module so the program's parameter imports resolve.
+  static std::unique_ptr<IreeRuntime> Load(std::span<const std::byte> vmfb,
+                                           std::string_view entryPoint,
+                                           std::string_view driver,
+                                           std::span<const ParameterScope> parameters);
 
   ~IreeRuntime();
   IreeRuntime(const IreeRuntime&) = delete;
