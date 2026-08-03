@@ -205,10 +205,21 @@ TEST_CASE("zero-byte archive throws rather than crashing", "[params][errors]") {
   // 0-18446744073709551615 (...) from file of 0 total bytes". The mapped
   // range is an incidental huge sentinel; "0 total bytes" is the stable,
   // semantic part -- it is literally the diagnosis (empty file).
+  //
+  // Windows diverges: CreateFileMappingW cannot map a zero-length file, so the
+  // failure surfaces earlier at file_handle.c:811 as "UNKNOWN; failed to
+  // create file mapping for file handle" -- same throw, different diagnosis.
+#ifdef _WIN32
+  REQUIRE_THROWS_WITH(
+      IreeRuntime::Load(bytes, kEntryPoint, "local-sync", scopes),
+      Catch::Matchers::ContainsSubstring("UNKNOWN") &&
+          Catch::Matchers::ContainsSubstring("failed to create file mapping"));
+#else
   REQUIRE_THROWS_WITH(
       IreeRuntime::Load(bytes, kEntryPoint, "local-sync", scopes),
       Catch::Matchers::ContainsSubstring("INVALID_ARGUMENT") &&
           Catch::Matchers::ContainsSubstring("0 total bytes"));
+#endif
 }
 
 TEST_CASE("truncated archive throws rather than crashing", "[params][errors]") {
