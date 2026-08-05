@@ -104,6 +104,84 @@ class IreeNativeTest {
         }
     }
 
+    /**
+     * The alignment evidence behind the STAGED outcome. The JVM guarantees
+     * nothing stronger than 8-byte (long) alignment for direct-buffer
+     * addresses; IREE's import precondition is 64-byte alignment
+     * (IREE_HAL_HEAP_BUFFER_ALIGNMENT). The printed {@code addr%64} histogram
+     * shows how often a malloc'd address happens to meet the precondition —
+     * the raw material for findings doc §4. Buffers are dropped without GC
+     * between allocations so consecutive mallocs land at different offsets.
+     */
+    @Test
+    void recordsDirectBufferAddressAlignment() {
+        long[] buckets = new long[64];
+        for (int i = 0; i < 1000; i++) {
+            ByteBuffer b =
+                    ByteBuffer.allocateDirect(4 * Float.BYTES)
+                            .order(ByteOrder.nativeOrder());
+            long addr = IreeNative.bufferAddress(b);
+            assertTrue(addr != 0, "direct buffer must have a native address");
+            assertTrue(addr % 8 == 0, "JVM floor: direct buffer addresses are 8-aligned");
+            buckets[(int) (addr & 63)]++;
+        }
+        StringBuilder sb =
+                new StringBuilder("DIRECT BUFFER ADDR%64 HISTOGRAM (1000 x 16B):");
+        for (int i = 0; i < 64; i++) {
+            if (buckets[i] > 0) {
+                sb.append(' ').append(i).append('=').append(buckets[i]);
+            }
+        }
+        System.out.println(sb);
+    }
+
+    /**
+     * The W4 prototype's core claim: an engine-allocated aligned buffer
+     * imports zero-copy deterministically (both inputs are aligned, so both
+     * outcomes must be WRAPPED — a plain JDK buffer for either input would
+     * make this flaky, see recordsDirectBufferAddressAlignment). The buffer
+     * is freed explicitly here; the Cleaner path is LeakStressTest's job.
+     */
+    @Test
+    void alignedBufferImportsZeroCopy() throws IOException {
+        long handle = IreeNative.load(addVmfb(), ENTRY_POINT, "local-sync");
+        try {
+            ByteBuffer lhs =
+                    IreeNative.allocateDirectAligned(4 * Float.BYTES)
+                            .order(ByteOrder.nativeOrder());
+            ByteBuffer rhs =
+                    IreeNative.allocateDirectAligned(4 * Float.BYTES)
+                            .order(ByteOrder.nativeOrder());
+            long lhsAddr = IreeNative.bufferAddress(lhs);
+            long rhsAddr = IreeNative.bufferAddress(rhs);
+            try {
+                assertTrue(lhsAddr != 0 && lhsAddr % 64 == 0, "aligned buffer must be 64-aligned");
+                assertTrue(rhsAddr != 0 && rhsAddr % 64 == 0, "aligned buffer must be 64-aligned");
+                lhs.asFloatBuffer().put(ADD_LHS);
+                rhs.asFloatBuffer().put(ADD_RHS);
+
+                IreeTensor[] outputs =
+                        IreeNative.invoke(
+                                handle,
+                                new ByteBuffer[] {lhs, rhs},
+                                new long[][] {{4L}, {4L}},
+                                new int[] {F32, F32});
+
+                assertEquals(1, outputs.length);
+                FloatBuffer result =
+                        outputs[0].getData().order(ByteOrder.nativeOrder()).asFloatBuffer();
+                assertEquals(11f, result.get(0), 1e-6f);
+                assertEquals(44f, result.get(3), 1e-6f);
+                assertArrayEquals(new int[] {1, 1}, IreeNative.lastImportOutcomes(handle));
+            } finally {
+                IreeNative.freeDirectAligned(lhsAddr);
+                IreeNative.freeDirectAligned(rhsAddr);
+            }
+        } finally {
+            IreeNative.close(handle);
+        }
+    }
+
     @Test
     void rejectsCorruptModel() {
         byte[] garbage = new byte[256];

@@ -28,6 +28,16 @@ struct OutputBuffer {
   std::vector<std::byte> data;
 };
 
+// Output METADATA for the view-based invoke (InvokeViews). The owning
+// OutputBuffer exists to be handed out of the facade; OutputLayout exists to
+// let the JNI marshal outputs directly into JVM-owned buffers without a
+// std::vector detour — see ReadOutput()/ReleaseOutputs().
+struct OutputLayout {
+  std::vector<int64_t> shape;
+  int32_t elementType;
+  uint64_t nbytes;
+};
+
 struct RuntimeState;  // pimpl
 
 // One parameter archive bound to a scope name. `scope` is the name the compiled
@@ -48,6 +58,15 @@ class IreeRuntime {
  public:
   enum class ImportOutcome { kWrapped, kStaged };
 
+  // How the staged input fallback obtains its staging buffer (see
+  // ImportOrCopy). kAllocatePerCall is the historical behavior — one fresh
+  // HAL buffer per staged input per call. The kCached* modes retain a
+  // grow-only buffer PER INPUT SLOT on the runtime and reuse it across calls,
+  // amortizing the allocation; the two cached modes differ only in the copy
+  // primitive (host map_write vs device transfer_h2d). ImportOutcome stays
+  // kStaged in every mode — a copy still happened.
+  enum class StagingMode { kAllocatePerCall = 0, kCachedMapWrite, kCachedTransfer };
+
   // Throws std::runtime_error on failure. The vmfb bytes are COPIED: IREE's
   // append-from-memory with a null allocator does not take ownership, so the
   // data must outlive the session and we own that lifetime ourselves.
@@ -67,11 +86,32 @@ class IreeRuntime {
                                            std::string_view driver,
                                            std::span<const ParameterScope> parameters);
 
+  // As above, with the staged-input fallback's staging policy. Defaults to
+  // the historical per-call allocation, so no existing callsite changes.
+  static std::unique_ptr<IreeRuntime> Load(std::span<const std::byte> vmfb,
+                                           std::string_view entryPoint,
+                                           std::string_view driver,
+                                           std::span<const ParameterScope> parameters,
+                                           StagingMode staging);
+
   ~IreeRuntime();
   IreeRuntime(const IreeRuntime&) = delete;
   IreeRuntime& operator=(const IreeRuntime&) = delete;
 
   std::vector<OutputBuffer> Invoke(std::span<const InputDesc> inputs);
+
+  // View-based invoke: runs the call and returns only output METADATA; the
+  // output views themselves are retained by the runtime until ReleaseOutputs().
+  // ReadOutput() then materializes one output into an arbitrary host
+  // destination (a copy — no alignment requirement). Safe because execution
+  // is synchronous for both shipped drivers (call return == completion,
+  // findings 2026-08-04 §5): nothing IREE-side can outlive the caller's
+  // ReleaseOutputs(). Invoke() and InvokeViews() are interchangeable for
+  // inputs; each clears the other's pending outputs first, so forgetting
+  // ReleaseOutputs() leaks nothing (stale-batch guard).
+  std::vector<OutputLayout> InvokeViews(std::span<const InputDesc> inputs);
+  void ReadOutput(size_t index, void* dst);  // throws std::out_of_range
+  void ReleaseOutputs();
 
   // Empirical answer to "did the import zero-copy or silently stage?".
   // Deliberately part of the API, not a log line, so tests can assert it.
