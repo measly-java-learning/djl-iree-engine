@@ -26,8 +26,9 @@ build
 # Ignore Kotlin plugin data
 .kotlin
 
-# Native QA / bench outputs (container-produced)
-native/bench/
+# Native QA / bench outputs (container-produced). NOTE: native/bench/ holds
+# bench SOURCE (iree_copy_bench.cpp, referenced by CMakeLists.txt) and must not
+# be ignored — bench outputs go to native/bench-results/ and build/bench-models/.
 native/bench-results/
 native/asan/
 native/qa_noasan/
