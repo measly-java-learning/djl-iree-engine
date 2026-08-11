@@ -334,7 +334,12 @@ class IreeNativeTest {
                     after[IreeNative.STAT_STAGED_IMPORTS]
                                     + after[IreeNative.STAT_WRAPPED_IMPORTS]
                             == 2L);
-            assertTrue(after[IreeNative.STAT_STAGING_BYTES] > 0L);
+            // stagingBytes>0 holds only when at least one input staged; both inputs can
+            // legitimately wrap when malloc happens to return 64-byte-aligned addresses.
+            // The invariant that matters: a staged input must have left a cached footprint.
+            if (after[IreeNative.STAT_STAGED_IMPORTS] > 0L) {
+                assertTrue(after[IreeNative.STAT_STAGING_BYTES] > 0L);
+            }
         } finally {
             IreeNative.close(handle);
         }
