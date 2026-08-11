@@ -9,6 +9,7 @@
 #include <new>
 #include <span>
 #include <vector>
+#include "array_size_limits.h"
 #include "core/aligned_alloc.h"
 #include "core/iree_runtime.h"
 
@@ -33,6 +34,17 @@ TEST_CASE("loads a valid vmfb", "[runtime]") {
   auto bytes = ReadFile(kAddVmfb);
   auto runtime = IreeRuntime::Load(bytes, kEntryPoint);
   REQUIRE(runtime != nullptr);
+}
+
+// Pins the boundary the invoke() output guards enforce (issue #15): an output
+// of exactly INT32_MAX bytes is the largest jint that allocateDirect can take;
+// one byte more would truncate. The >2 GiB path itself is untested (would need
+// a 2 GiB fixture); this case fixes the limit the guard is compiled against.
+TEST_CASE("jni array size limit: outputs above INT32_MAX bytes must be rejected",
+          "[runtime][jni]") {
+  using measly::iree::exceedsJniArrayLimit;
+  REQUIRE_FALSE(exceedsJniArrayLimit(static_cast<size_t>(INT32_MAX)));
+  REQUIRE(exceedsJniArrayLimit(static_cast<size_t>(INT32_MAX) + 1));
 }
 
 #include <cstdint>
