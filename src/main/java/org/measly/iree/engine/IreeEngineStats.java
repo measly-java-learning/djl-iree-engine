@@ -347,17 +347,37 @@ public final class IreeEngineStats {
         if (!JMX_ATTEMPTED.compareAndSet(false, true)) {
             return;
         }
-        String enabled;
-        try {
-            enabled = System.getProperty(JMX_ENABLED_PROPERTY);
-        } catch (SecurityException e) {
-            IreeJmx.disabled();
-            return; // unreadable property under a restrictive SecurityManager: stay off
-        }
-        if ("false".equalsIgnoreCase(enabled)) {
+        if (!jmxEnabled()) {
             IreeJmx.disabled();
             return;
         }
         registerMBean();
+    }
+
+    /**
+     * Whether auto-registration is permitted. Opt out with
+     * {@code -Dai.djl.iree.jmx_enabled=false}; anything else, including an absent property, is
+     * opt-in. A property unreadable under a restrictive {@code SecurityManager} stays off.
+     *
+     * <p>Split out of {@link #registerMBeanOnce()} so it is reachable from a test. Folded in, the
+     * only way to observe the decision was through the one-shot latch, which fires once per JVM.
+     */
+    static boolean jmxEnabled() {
+        try {
+            return !"false".equalsIgnoreCase(System.getProperty(JMX_ENABLED_PROPERTY));
+        } catch (SecurityException e) {
+            return false;
+        }
+    }
+
+    /**
+     * Re-arms the one-shot latch so {@link #registerMBeanOnce()} will attempt again.
+     *
+     * <p><b>Test seam.</b> Auto-registration fires once per JVM by design, which leaves the
+     * opt-out branch unreachable from a test that runs in the same JVM as any other model load.
+     * Nothing in production calls this.
+     */
+    static void resetJmxAutoRegistrationForTesting() {
+        JMX_ATTEMPTED.set(false);
     }
 }

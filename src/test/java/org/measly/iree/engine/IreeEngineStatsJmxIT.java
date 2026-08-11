@@ -1,6 +1,7 @@
 package org.measly.iree.engine;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -56,15 +57,65 @@ class IreeEngineStatsJmxIT {
         assertEquals("", snapshot.getJmxError());
     }
 
+    /**
+     * Drives the real auto-registration path in both property states.
+     *
+     * <p>The previous version of this test asserted {@code DISABLED} after calling {@code
+     * unregisterMBean()}, which sets {@code DISABLED} itself — so it passed with the property set
+     * to {@code "true"}, with the property cleared, and with the opt-out branch deleted outright.
+     * It asserted nothing about the only supported way to turn JMX off.
+     */
     @Test
-    void optOutPropertySuppressesAutoRegistration() {
+    void optOutPropertySuppressesAutoRegistration() throws Exception {
+        String previous = System.getProperty(IreeEngineStats.JMX_ENABLED_PROPERTY);
+        MBeanServer server = ManagementFactory.getPlatformMBeanServer();
+        ObjectName name = new ObjectName(IreeEngineStats.OBJECT_NAME);
+        try {
+            IreeEngineStats.unregisterMBean();
+
+            System.setProperty(IreeEngineStats.JMX_ENABLED_PROPERTY, "false");
+            assertFalse(IreeEngineStats.jmxEnabled());
+            IreeEngineStats.resetJmxAutoRegistrationForTesting();
+            IreeEngineStats.registerMBeanOnce();
+            assertFalse(server.isRegistered(name), "opt-out must suppress auto-registration");
+            assertEquals("DISABLED", IreeEngineStats.snapshot().getJmxStatus());
+
+            // The same call with the property absent must register — otherwise the assertion
+            // above would hold for a build where auto-registration never worked at all.
+            System.clearProperty(IreeEngineStats.JMX_ENABLED_PROPERTY);
+            assertTrue(IreeEngineStats.jmxEnabled());
+            IreeEngineStats.resetJmxAutoRegistrationForTesting();
+            IreeEngineStats.registerMBeanOnce();
+            assertTrue(server.isRegistered(name), "absent property means opt-in");
+            assertEquals("REGISTERED", IreeEngineStats.snapshot().getJmxStatus());
+
+            // And it really is one-shot: after a manual unregister, a second auto-attempt is
+            // not made.
+            IreeEngineStats.unregisterMBean();
+            IreeEngineStats.registerMBeanOnce();
+            assertFalse(
+                    server.isRegistered(name), "auto-registration is attempted exactly once");
+        } finally {
+            IreeEngineStats.resetJmxAutoRegistrationForTesting();
+            if (previous == null) {
+                System.clearProperty(IreeEngineStats.JMX_ENABLED_PROPERTY);
+            } else {
+                System.setProperty(IreeEngineStats.JMX_ENABLED_PROPERTY, previous);
+            }
+        }
+    }
+
+    /** An explicit registerMBean() is the documented escape hatch and ignores the property. */
+    @Test
+    void explicitRegistrationIgnoresTheOptOutProperty() throws Exception {
         String previous = System.getProperty(IreeEngineStats.JMX_ENABLED_PROPERTY);
         System.setProperty(IreeEngineStats.JMX_ENABLED_PROPERTY, "false");
         try {
-            IreeEngineStats.unregisterMBean();
-            // registerMBeanOnce is one-shot per JVM, so assert the property read directly:
-            // an explicit registerMBean() still works, which is the documented escape hatch.
-            assertEquals("DISABLED", IreeEngineStats.snapshot().getJmxStatus());
+            IreeEngineStats.registerMBean();
+            assertTrue(
+                    ManagementFactory.getPlatformMBeanServer()
+                            .isRegistered(new ObjectName(IreeEngineStats.OBJECT_NAME)));
+            assertEquals("REGISTERED", IreeEngineStats.snapshot().getJmxStatus());
         } finally {
             if (previous == null) {
                 System.clearProperty(IreeEngineStats.JMX_ENABLED_PROPERTY);
