@@ -56,6 +56,33 @@ FetchContent_MakeAvailable(iree_runtime_dist)
 list(APPEND CMAKE_PREFIX_PATH "${iree_runtime_dist_SOURCE_DIR}")
 find_package(IreeRuntimeDist REQUIRED)
 
+# --- IREE_STATISTICS_ENABLE agreement with the dist ---
+#
+# RuntimeStats::statisticsAvailable and the device byte gauges compile against
+# iree_hal_allocator_statistics_t, whose fields are #if IREE_STATISTICS_ENABLE.
+# The header defaults it to 1; if the dist's archives were built with 0, our
+# struct layout and theirs disagree — a silent ABI mismatch, not a missing
+# feature. Read the dist's recorded flags and match them explicitly.
+set(_iree_buildinfo "${iree_runtime_dist_SOURCE_DIR}/BUILDINFO")
+if(EXISTS "${_iree_buildinfo}")
+  file(READ "${_iree_buildinfo}" _iree_buildinfo_text)
+  if(_iree_buildinfo_text MATCHES "-DIREE_STATISTICS_ENABLE=([01])")
+    set(IREE_DJL_STATISTICS_ENABLE "${CMAKE_MATCH_1}")
+    message(STATUS
+      "iree-runtime-dist BUILDINFO sets IREE_STATISTICS_ENABLE=${IREE_DJL_STATISTICS_ENABLE}; matching it.")
+  else()
+    set(IREE_DJL_STATISTICS_ENABLE "1")
+    message(STATUS
+      "iree-runtime-dist BUILDINFO does not override IREE_STATISTICS_ENABLE; using the header default (1).")
+  endif()
+else()
+  set(IREE_DJL_STATISTICS_ENABLE "1")
+  message(WARNING
+    "iree-runtime-dist BUILDINFO not found at ${_iree_buildinfo}; "
+    "assuming IREE_STATISTICS_ENABLE=1. If the dist was built with statistics "
+    "disabled, the device byte gauges will be wrong rather than absent.")
+endif()
+
 # Fixtures are per-arch: .vmfb embeds an arch-specific ELF executable (the dist's own
 # sample add.vmfb is x86_64-only, so aarch64 builds must NOT use it). The .irpa files are
 # pure data and ride along in the same dir for a complete per-arch fixture set. Stopgap:
@@ -108,6 +135,8 @@ target_link_libraries(link_smoke_test PRIVATE iree-runtime-dist::runtime)
 add_library(iree_djl_core STATIC core/iree_runtime.cpp)
 target_include_directories(iree_djl_core PUBLIC "${CMAKE_CURRENT_LIST_DIR}" "${CMAKE_CURRENT_LIST_DIR}/jni")
 target_link_libraries(iree_djl_core PUBLIC iree-runtime-dist::runtime)
+target_compile_definitions(iree_djl_core
+  PUBLIC IREE_STATISTICS_ENABLE=${IREE_DJL_STATISTICS_ENABLE})
 # The curated iree-runtime-dist::runtime umbrella (libiree_runtime_unified.a)
 # does NOT include the io_parameters stack -- confirmed by nm: only
 # iree_io_file_handle_open lives in the unified archive. Everything else
