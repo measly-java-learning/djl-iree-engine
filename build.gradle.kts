@@ -159,12 +159,21 @@ val generateIreeDataTypes = tasks.register<IreeDataTypeCodegen>("generateIreeDat
 
 // The pinned dist tag as a Java constant. Sourced from the same properties file the
 // native build's pin generates, so there is no version literal in Java and no second
-// source of truth. Emitted into generatedIreeSourcesDir, which is already on the main
-// source set.
+// source of truth.
+//
+// Its OWN output directory, not generatedIreeSourcesDir. Two tasks declaring the same
+// output directory is a state Gradle explicitly flags: it disables build-cache
+// eligibility for both, and because nothing orders these two against each other, it is
+// a live hazard the moment IreeDataTypeCodegen becomes @CacheableTask — Gradle clears a
+// cached task's output directory before unpacking into it, which would delete
+// IreeRuntimeInfo.java if this task had already run. Separate directories, both on the
+// main source set, cost one line and remove the coupling entirely.
 val ireeDistTag = ireeMetadata.getProperty("ireeRuntimeDistTag", "unknown")
 
+val generatedIreeRuntimeInfoDir = layout.buildDirectory.dir("generated/sources/iree-runtime-info")
+
 val generateIreeRuntimeInfo = tasks.register("generateIreeRuntimeInfo") {
-    val outDir = generatedIreeSourcesDir
+    val outDir = generatedIreeRuntimeInfoDir
     val tag = ireeDistTag
     inputs.property("ireeDistTag", tag)
     outputs.dir(outDir)
@@ -191,6 +200,7 @@ val generateIreeRuntimeInfo = tasks.register("generateIreeRuntimeInfo") {
 sourceSets {
     main {
         java.srcDir(generatedIreeSourcesDir)
+        java.srcDir(generatedIreeRuntimeInfoDir)
     }
 }
 
