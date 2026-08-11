@@ -30,8 +30,8 @@ public class IreeSymbolBlock extends AbstractSymbolBlock implements AutoCloseabl
 
     // Serializes the stats cold path against close(): the stats read takes the native
     // handle and calls into JNI, close() destroys the handle, and a destroy between the
-    // read and the JNI call would be a use-after-free. Taken only by close() and
-    // toStats(), never by forwardInternal — the hot path stays lock-free.
+    // read and the JNI call would be a use-after-free. Taken only by close(), toStats()
+    // and getLastImportOutcomes(), never by forwardInternal — the hot path stays lock-free.
     private final Object statsLock = new Object();
 
     // Attached by IreeModel.load right after construction. Null only in the narrow
@@ -115,9 +115,21 @@ public class IreeSymbolBlock extends AbstractSymbolBlock implements AutoCloseabl
      * <p>Production callers should use {@link IreeEngineStats#snapshot()}'s cumulative
      * {@code wrappedImports}/{@code stagedImports} instead — this per-call query is
      * last-call-only state.
+     *
+     * <p>Holds {@code statsLock} across the handle read and the JNI call so a concurrent
+     * {@code close()} cannot free the runtime between them — the same use-after-free
+     * window {@link #toStats()} guards. On a closed model (handle zero) the native
+     * per-call state died with the runtime; an empty array is returned rather than
+     * throwing out of JNI.
      */
     public int[] getLastImportOutcomes() {
-        return IreeNative.lastImportOutcomes(handle);
+        synchronized (statsLock) {
+            long h = handle;
+            if (h == 0L) {
+                return new int[0];
+            }
+            return IreeNative.lastImportOutcomes(h);
+        }
     }
 
     /**
@@ -149,9 +161,17 @@ public class IreeSymbolBlock extends AbstractSymbolBlock implements AutoCloseabl
                         deviceLive = raw[IreeNative.STAT_DEVICE_BYTES_LIVE];
                     }
                     c.recordNativeImports(wrapped, staged);
+                    c.recordNativeStatsStatus(
+                            raw[IreeNative.STAT_STATISTICS_AVAILABLE] == 1L ? 1 : 0);
                 }
             }
         }
+        // Read max BEFORE total: the writer publishes total, then max (see
+        // IreeModelCounters.recordForward), so a reader that sees the new max must also
+        // see the new total — that read order is what keeps max <= total even when the
+        // read straddles the writer's stores.
+        long forwardMaxNanos = c.forwardMaxNanos();
+        long forwardTotalNanos = c.forwardTotalNanos();
         return new IreeModelStats(
                 c.name(),
                 c.driver(),
@@ -159,8 +179,8 @@ public class IreeSymbolBlock extends AbstractSymbolBlock implements AutoCloseabl
                 c.parameterScopeCount(),
                 c.loadNanos(),
                 c.forwardCount(),
-                c.forwardTotalNanos(),
-                c.forwardMaxNanos(),
+                forwardTotalNanos,
+                forwardMaxNanos,
                 wrapped,
                 staged,
                 stagingBytes,
@@ -184,6 +204,8 @@ public class IreeSymbolBlock extends AbstractSymbolBlock implements AutoCloseabl
                         c.recordNativeImports(
                                 raw[IreeNative.STAT_WRAPPED_IMPORTS],
                                 raw[IreeNative.STAT_STAGED_IMPORTS]);
+                        c.recordNativeStatsStatus(
+                                raw[IreeNative.STAT_STATISTICS_AVAILABLE] == 1L ? 1 : 0);
                     }
                 }
                 IreeEngineStats.deregister(handle);

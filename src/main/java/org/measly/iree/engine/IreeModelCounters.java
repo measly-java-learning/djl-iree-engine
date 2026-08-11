@@ -37,6 +37,16 @@ final class IreeModelCounters {
     private volatile long lastWrappedImports;
     private volatile long lastStagedImports;
 
+    // Status of the last native stats read: 1 = the read succeeded and the native side
+    // reported STAT_STATISTICS_AVAILABLE == 1; 0 = the read succeeded and statistics are
+    // compiled out; -1 = no successful read yet/this tick. Distinct from the -1
+    // byte-gauge convention: the gauges also read -1 when the native read did not happen
+    // at all (handle zero racing close(), JNI null), and the process-wide statsAvailable
+    // flag must flip only on an EXPLICIT compiled-out answer, never on an unreadable
+    // read. Written from the stats cold path under the block's statsLock (toStats() and
+    // close()), read from IreeEngineStats.snapshot().
+    private volatile int lastStatsStatus = -1;
+
     IreeModelCounters(
             String name,
             String driver,
@@ -56,11 +66,16 @@ final class IreeModelCounters {
      * <p><b>The write order is load-bearing: count, then total, then max.</b> A reader on another
      * thread can interleave anywhere between these three volatile writes, and this order is what
      * guarantees the invariant {@code forwardMaxNanos <= forwardTotalNanos} — the max is published
-     * only after the total that already includes the same sample. The JMM forbids reordering
-     * volatile writes with each other, so the guarantee is real, but it is a property of this
-     * sequence and not of the field declarations. Writing max first would let a reader observe a
-     * max with no total behind it, breaking an assertion in {@code StatsConcurrencyIT} in a way
-     * that only shows up as a rare flake under load.
+     * only after the total that already includes the same sample. That ordering covers only the
+     * writer: the JMM forbids reordering volatile writes with each other, which pins the publish
+     * order, but a reader that reads total first and then max can still straddle the writer's
+     * stores and observe the new max with the old total. The guarantee therefore also requires
+     * the reader to read <b>max before total</b> — so it can see the new max only once the new
+     * total is already visible — and {@code IreeSymbolBlock#toStats()} does exactly that. It is a
+     * property of this write sequence plus the reader's read order, not of the field declarations.
+     * Writing max first would let a reader observe a max with no total behind it, breaking an
+     * assertion in {@code StatsConcurrencyIT} in a way that only shows up as a rare flake under
+     * load.
      *
      * @param nanos the measured wall duration of the native invoke call
      */
@@ -115,5 +130,14 @@ final class IreeModelCounters {
 
     long lastStagedImports() {
         return lastStagedImports;
+    }
+
+    void recordNativeStatsStatus(int status) {
+        lastStatsStatus = status;
+    }
+
+    /** 1 = native statistics available, 0 = compiled out, -1 = no successful read yet. */
+    int lastStatsStatus() {
+        return lastStatsStatus;
     }
 }

@@ -171,7 +171,13 @@ public final class IreeEngineStats {
             if (stats.getDeviceBytesLive() > 0) {
                 deviceLive += stats.getDeviceBytesLive();
             }
-            if (stats.getDeviceBytesPeak() < 0) {
+            // Flip the process-wide flag only when the native read EXPLICITLY reported
+            // statistics-compiled-out (status 0). The -1 byte gauges also cover native
+            // reads that did not happen (handle raced by close(), JNI null) — those
+            // must not clear the flag, because HAL statistics ARE compiled in; the read
+            // simply did not occur this tick.
+            if (stats.getDeviceBytesPeak() < 0
+                    && ref.counters.lastStatsStatus() == 0) {
                 statsAvailable = false;
             }
         }

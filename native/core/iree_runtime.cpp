@@ -43,9 +43,13 @@ struct RuntimeState {
 
   // Cumulative import outcomes, for the observability snapshot. Incremented in
   // RunCall, which is the single input-preparation path for both Invoke and
-  // InvokeViews. Single-writer by the caller contract (one model per thread).
-  uint64_t wrappedImports = 0;
-  uint64_t stagedImports = 0;
+  // InvokeViews. Atomic with relaxed ordering: RunCall writes them from the
+  // model's thread while Stats() may read them from a monitoring poll, and a
+  // bare uint64_t would be a data race. Relaxed is sufficient — each counter is
+  // a standalone cumulative count with no ordering constraints against the read
+  // side (the reader needs no happens-before edge to a specific call).
+  std::atomic<uint64_t> wrappedImports{0};
+  std::atomic<uint64_t> stagedImports{0};
 
   // Staged-input fallback policy. The cached modes retain one grow-only
   // staging buffer PER INPUT SLOT for the runtime's lifetime — see
@@ -231,9 +235,17 @@ std::span<const IreeRuntime::ImportOutcome> IreeRuntime::lastImportOutcomes() co
 
 RuntimeStats IreeRuntime::Stats() const {
   RuntimeStats out{};
-  out.wrappedImports = state_->wrappedImports;
-  out.stagedImports = state_->stagedImports;
+  out.wrappedImports = state_->wrappedImports.load(std::memory_order_relaxed);
+  out.stagedImports = state_->stagedImports.load(std::memory_order_relaxed);
 
+  // Deliberately lock-free — RunCall is the hot path and the design forbids a
+  // lock there. cachedStagingSizes is grow-only and bounded by the input-slot
+  // count, so the only window is a poll that races a first-time resize: it may
+  // read a partially-resized table and report a stagingBytes that is
+  // approximate for that one poll. The next poll sees the settled table, so
+  // the value is exact whenever the runtime is quiescent and self-corrects
+  // within one poll of any growth — the same class of transient the Java side
+  // already tolerates.
   uint64_t staging = 0;
   for (iree_device_size_t size : state_->cachedStagingSizes) {
     staging += static_cast<uint64_t>(size);
@@ -394,9 +406,9 @@ std::vector<BufferViewPtr> RunCall(RuntimeState& state,
                              &state.lastImportOutcomes[i]);
     // Count the outcome ImportOrCopy just recorded rather than re-deriving it.
     if (state.lastImportOutcomes[i] == IreeRuntime::ImportOutcome::kWrapped) {
-      ++state.wrappedImports;
+      state.wrappedImports.fetch_add(1, std::memory_order_relaxed);
     } else {
-      ++state.stagedImports;
+      state.stagedImports.fetch_add(1, std::memory_order_relaxed);
     }
     IREE_CHECK_OR_THROW(iree_runtime_call_inputs_push_back_buffer_view(
         call.get(), view.get()));
