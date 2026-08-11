@@ -6,6 +6,7 @@
 // `local-sync` driver the process stays single-threaded (TSan clean, zero
 // clone/clone3, Threads: 1 per /proc/<pid>/status), which is what keeps the
 // ASan/LSan run deterministic. See docs/superpowers/specs/2026-07-19-djl-iree-engine-findings.md.
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -65,6 +66,60 @@ void HappyPathCycle(const std::vector<std::byte>& vmfb, const char* driver) {
   if (r[0] != 11.0f || r[3] != 44.0f) {
     std::fprintf(stderr, "golden mismatch: %f %f\n", r[0], r[3]);
     std::exit(72);
+  }
+}
+
+// One runtime, many invokes. The load/invoke/close cycle above tears the runtime
+// down each iteration, which frees everything and therefore MASKS a per-invoke
+// leak — staging regrowth, or an output view never released. This loop keeps one
+// runtime alive and asserts the gauges settle, which is the assertion LSan
+// structurally cannot make: a buffer retained by a live runtime is reachable.
+void IntraRuntimeInvokeCycle(const std::vector<std::byte>& vmfb, const char* driver) {
+  // kCachedMapWrite explicitly: kAllocatePerCall retains no cached staging
+  // buffers, so stagingBytes would be structurally zero and assert nothing.
+  auto runtime = IreeRuntime::Load(vmfb, kEntryPoint, driver,
+                                   std::span<const ParameterScope>{},
+                                   IreeRuntime::StagingMode::kCachedMapWrite);
+  const float lhs[4] = {1.0f, 2.0f, 3.0f, 4.0f};
+  const float rhs[4] = {10.0f, 20.0f, 30.0f, 40.0f};
+  std::vector<InputDesc> inputs = {
+      {lhs, sizeof(lhs), {4}, kF32},
+      {rhs, sizeof(rhs), {4}, kF32},
+  };
+
+  (void)runtime->Invoke(inputs);
+  // Baselines AFTER the first invoke: the first call allocates the grow-only
+  // cached staging buffers (one DEVICE_LOCAL buffer per input slot, retained
+  // for the runtime's lifetime by design), so a pre-invoke deviceBytesLive
+  // baseline would count exactly that intentional footprint as a "leak" and
+  // fail structurally. What these baselines detect is GROWTH across invokes.
+  const uint64_t deviceBaseline = runtime->Stats().deviceBytesLive;
+  const uint64_t stagingAfterFirst = runtime->Stats().stagingBytes;
+
+  for (int i = 0; i < 500; ++i) {
+    (void)runtime->Invoke(inputs);
+  }
+
+  const auto stats = runtime->Stats();
+  if (stats.stagingBytes != stagingAfterFirst) {
+    std::fprintf(stderr,
+                 "staging footprint grew across invokes: %llu -> %llu\n",
+                 static_cast<unsigned long long>(stagingAfterFirst),
+                 static_cast<unsigned long long>(stats.stagingBytes));
+    std::exit(71);
+  }
+  if (stats.deviceBytesLive != deviceBaseline) {
+    std::fprintf(stderr,
+                 "device bytes did not return to baseline: %llu -> %llu\n",
+                 static_cast<unsigned long long>(deviceBaseline),
+                 static_cast<unsigned long long>(stats.deviceBytesLive));
+    std::exit(72);
+  }
+  if (stats.wrappedImports + stats.stagedImports != 2 * 501) {
+    std::fprintf(stderr, "unexpected import count: %llu\n",
+                 static_cast<unsigned long long>(stats.wrappedImports +
+                                                 stats.stagedImports));
+    std::exit(73);
   }
 }
 
@@ -205,11 +260,20 @@ int main(int argc, char** argv) {
   for (int i = 0; i < iterations; ++i) HappyPathCycle(vmfb, driver);
   std::printf("happy path: %d cycles ok\n", iterations);
 
+  IntraRuntimeInvokeCycle(vmfb, driver);
+  std::printf("intra-runtime invoke cycle ok\n");
+
   for (int i = 0; i < iterations; ++i) ErrorPathCycle(vmfb, driver);
   std::printf("error paths: %d cycles ok\n", iterations);
 
   ImportEscapeCheck(vmfb, driver);
   std::printf("import escape check ok\n");
+
+  if (measly::iree::AliveRuntimeCount() != 0) {
+    std::fprintf(stderr, "runtimes still alive at exit: %lld\n",
+                 static_cast<long long>(measly::iree::AliveRuntimeCount()));
+    return 74;
+  }
 
   std::printf("HARNESS PASS\n");
   return 0;

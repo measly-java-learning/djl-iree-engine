@@ -33,6 +33,10 @@ class LeakStressTest {
         Path modelDir = Paths.get("src/test/resources/models");
         float[] expected = {11f, 22f, 33f, 44f};
 
+        long runtimesBefore = IreeNative.aliveRuntimes();
+        long closedForwardsBefore =
+                org.measly.iree.engine.IreeEngineStats.snapshot().getClosedForwardCount();
+
         for (int i = 0; i < ITERATIONS; i++) {
             try (Model model = Model.newInstance("add", "IREE")) {
                 model.load(modelDir, "add", Map.of("entryPoint", "module.add"));
@@ -44,6 +48,20 @@ class LeakStressTest {
                 }
             }
         }
+
+        // Exact assertions, not "did not OOM". The budget only catches a leak large enough to
+        // exhaust it; these catch the first one.
+        assertEquals(
+                runtimesBefore,
+                IreeNative.aliveRuntimes(),
+                "every loaded runtime must be released by close()");
+        org.measly.iree.engine.IreeStatsSnapshot snapshot =
+                org.measly.iree.engine.IreeEngineStats.snapshot();
+        assertEquals(0, snapshot.getModelsLive(), "no model may remain in the registry");
+        assertEquals(
+                closedForwardsBefore + ITERATIONS,
+                snapshot.getClosedForwardCount(),
+                "every forward must reach the rollup via deregistration");
     }
 
     /**
