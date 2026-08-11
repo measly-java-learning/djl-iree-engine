@@ -30,6 +30,13 @@ final class IreeModelCounters {
     private volatile long forwardTotalNanos;
     private volatile long forwardMaxNanos;
 
+    // Last observed native import totals. Native counters die with the runtime, so the
+    // block records them here on every stats read; deregistration folds the last value
+    // into the process rollup. Written from the stats cold path under the block's
+    // statsLock, read from the same place plus deregistration.
+    private volatile long lastWrappedImports;
+    private volatile long lastStagedImports;
+
     IreeModelCounters(
             String name,
             String driver,
@@ -95,5 +102,18 @@ final class IreeModelCounters {
 
     long forwardMaxNanos() {
         return forwardMaxNanos;
+    }
+
+    void recordNativeImports(long wrapped, long staged) {
+        lastWrappedImports = wrapped;
+        lastStagedImports = staged;
+    }
+
+    long lastWrappedImports() {
+        return lastWrappedImports;
+    }
+
+    long lastStagedImports() {
+        return lastStagedImports;
     }
 }

@@ -114,12 +114,73 @@ public class IreeSymbolBlock extends AbstractSymbolBlock implements AutoCloseabl
         return IreeNative.lastImportOutcomes(handle);
     }
 
+    /**
+     * Reads this model's statistics. Returns {@code null} if no counters are attached.
+     *
+     * <p>Holds {@code statsLock} across the handle read and the JNI call so a concurrent
+     * {@code close()} cannot free the runtime between them — that interleaving is a
+     * use-after-free, and it is exactly what a monitoring poll racing a model shutdown does.
+     */
+    IreeModelStats toStats() {
+        IreeModelCounters c = counters;
+        if (c == null) {
+            return null;
+        }
+        long wrapped = -1;
+        long staged = -1;
+        long stagingBytes = -1;
+        long devicePeak = -1;
+        long deviceLive = -1;
+        synchronized (statsLock) {
+            if (handle != 0L) {
+                long[] raw = IreeNative.stats(handle);
+                if (raw != null && raw.length == IreeNative.STAT_LENGTH) {
+                    wrapped = raw[IreeNative.STAT_WRAPPED_IMPORTS];
+                    staged = raw[IreeNative.STAT_STAGED_IMPORTS];
+                    stagingBytes = raw[IreeNative.STAT_STAGING_BYTES];
+                    if (raw[IreeNative.STAT_STATISTICS_AVAILABLE] == 1L) {
+                        devicePeak = raw[IreeNative.STAT_DEVICE_BYTES_PEAK];
+                        deviceLive = raw[IreeNative.STAT_DEVICE_BYTES_LIVE];
+                    }
+                    c.recordNativeImports(wrapped, staged);
+                }
+            }
+        }
+        return new IreeModelStats(
+                c.name(),
+                c.driver(),
+                c.entryPoint(),
+                c.parameterScopeCount(),
+                c.loadNanos(),
+                c.forwardCount(),
+                c.forwardTotalNanos(),
+                c.forwardMaxNanos(),
+                wrapped,
+                staged,
+                stagingBytes,
+                devicePeak,
+                deviceLive);
+    }
+
     @Override
     public void close() {
         // Mutual exclusion with toStats(): a concurrent snapshot poll must never observe
         // the handle between IreeNative.close() freeing it and the handle read.
         synchronized (statsLock) {
             if (handle != 0L) {
+                // Deregister first so no poll can reach a handle this method is about to free.
+                // Capture the native import totals into the counters on the way out, since the
+                // native side dies with the runtime.
+                IreeModelCounters c = counters;
+                if (c != null) {
+                    long[] raw = IreeNative.stats(handle);
+                    if (raw != null && raw.length == IreeNative.STAT_LENGTH) {
+                        c.recordNativeImports(
+                                raw[IreeNative.STAT_WRAPPED_IMPORTS],
+                                raw[IreeNative.STAT_STAGED_IMPORTS]);
+                    }
+                }
+                IreeEngineStats.deregister(handle);
                 IreeNative.close(handle);
                 handle = 0L;
             }
