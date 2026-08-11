@@ -64,5 +64,8 @@ jobs:
           context: docker
           file: "docker/${{ matrix.combo.platform }}.Dockerfile"
           tags: ${{ matrix.combo.container }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          # Per-platform gha scope: both rows must not share the default `buildkit` scope, or the
+          # last-finishing platform's cache would overwrite the other's. The scope must match the
+          # Task 6 consumer's cache-from scope (scope=${{ matrix.platform }}, same token value).
+          cache-from: type=gha,scope=${{ matrix.combo.platform }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.combo.platform }}
