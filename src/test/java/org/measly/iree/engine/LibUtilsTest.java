@@ -1,7 +1,9 @@
 package org.measly.iree.engine;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -108,5 +110,24 @@ class LibUtilsTest {
         } finally {
             System.setProperty("os.name", os);
         }
+    }
+
+    @Test
+    void loadedPathIsRecordedAfterLoad() {
+        LibUtils.loadLibrary();
+        String path = LibUtils.loadedPath();
+        assertNotNull(path, "loadedPath must be recorded once the library is loaded");
+        assertFalse(path.isEmpty());
+        assertTrue(
+                path.endsWith("libiree_djl.so") || path.endsWith("iree_djl.dll"),
+                "expected a native library filename, got: " + path);
+    }
+
+    @Test
+    void distTagIsGenerated() {
+        assertNotNull(IreeRuntimeInfo.DIST_TAG);
+        assertTrue(
+                IreeRuntimeInfo.DIST_TAG.startsWith("v"),
+                "expected a release tag like v3.11.0-11, got: " + IreeRuntimeInfo.DIST_TAG);
     }
 }

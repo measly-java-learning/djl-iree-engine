@@ -149,6 +149,37 @@ val generateIreeDataTypes = tasks.register<IreeDataTypeCodegen>("generateIreeDat
     outputDir.set(generatedIreeSourcesDir)
 }
 
+// The pinned dist tag as a Java constant. Sourced from the same properties file the
+// native build's pin generates, so there is no version literal in Java and no second
+// source of truth. Emitted into generatedIreeSourcesDir, which is already on the main
+// source set.
+val ireeDistTag = ireeMetadata.getProperty("ireeRuntimeDistTag", "unknown")
+
+val generateIreeRuntimeInfo = tasks.register("generateIreeRuntimeInfo") {
+    val outDir = generatedIreeSourcesDir
+    val tag = ireeDistTag
+    inputs.property("ireeDistTag", tag)
+    outputs.dir(outDir)
+    doLast {
+        val pkgDir = outDir.get().asFile.resolve("org/measly/iree/engine")
+        pkgDir.mkdirs()
+        pkgDir.resolve("IreeRuntimeInfo.java").writeText(
+            """
+            package org.measly.iree.engine;
+
+            /** Generated from third-party/iree-runtime-metadata.properties. Do not edit. */
+            public final class IreeRuntimeInfo {
+
+                /** The pinned iree-runtime-dist release tag, e.g. "v3.11.0-11". */
+                public static final String DIST_TAG = "$tag";
+
+                private IreeRuntimeInfo() {}
+            }
+            """.trimIndent() + "\n"
+        )
+    }
+}
+
 sourceSets {
     main {
         java.srcDir(generatedIreeSourcesDir)
@@ -156,11 +187,11 @@ sourceSets {
 }
 
 tasks.named("compileJava") {
-    dependsOn(generateIreeDataTypes)
+    dependsOn(generateIreeDataTypes, generateIreeRuntimeInfo)
 }
 
 tasks.matching { it.name == "sourcesJar" }.configureEach {
-    dependsOn(generateIreeDataTypes)
+    dependsOn(generateIreeDataTypes, generateIreeRuntimeInfo)
 }
 
 // LibUtils resolves the native library from IREE_LIBRARY_PATH before falling
