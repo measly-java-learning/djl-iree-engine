@@ -9,6 +9,7 @@
 #include <string>
 #include <vector>
 
+#include "array_size_limits.h"
 #include "core/aligned_alloc.h"
 #include "core/iree_runtime.h"
 
@@ -256,6 +257,14 @@ Java_org_measly_iree_jni_IreeNative_invoke(JNIEnv* env, jclass, jlong handle,
 
     for (size_t i = 0; i < layouts.size(); ++i) {
       const auto& layout = layouts[i];
+      // allocateDirect takes an int: an output at or above 2 GiB would be
+      // silently truncated (jint) and then map_read into a short buffer —
+      // a heap write overflow. Reject it instead (issue #15).
+      if (measly::iree::exceedsJniArrayLimit(layout.nbytes)) {
+        runtime->ReleaseOutputs();
+        ThrowJava(env, "IREE output exceeds the 2GB JNI direct-buffer limit");
+        return nullptr;
+      }
       // Direct buffer the JVM owns; the facade map_reads straight into it, so
       // this is the output path's ONLY copy — the intermediate owning vector
       // (and the JNI memcpy) are gone. Nothing IREE-side outlives
@@ -280,6 +289,13 @@ Java_org_measly_iree_jni_IreeNative_invoke(JNIEnv* env, jclass, jlong handle,
       }
       runtime->ReadOutput(i, dst);
 
+      // NewLongArray also takes an int; a shape longer than 2^31 dims is
+      // theoretical, but it is the loop's only other silent truncation.
+      if (measly::iree::exceedsJniArrayLimit(layout.shape.size())) {
+        runtime->ReleaseOutputs();
+        ThrowJava(env, "IREE output shape exceeds the JNI array length limit");
+        return nullptr;
+      }
       jlongArray shape = env->NewLongArray(static_cast<jsize>(layout.shape.size()));
       env->SetLongArrayRegion(shape, 0, static_cast<jsize>(layout.shape.size()),
                               reinterpret_cast<const jlong*>(layout.shape.data()));

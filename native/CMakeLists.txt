@@ -106,7 +106,7 @@ target_link_libraries(link_smoke_test PRIVATE iree-runtime-dist::runtime)
 
 # RAII facade over the IREE C API (Task 3)
 add_library(iree_djl_core STATIC core/iree_runtime.cpp)
-target_include_directories(iree_djl_core PUBLIC "${CMAKE_CURRENT_LIST_DIR}")
+target_include_directories(iree_djl_core PUBLIC "${CMAKE_CURRENT_LIST_DIR}" "${CMAKE_CURRENT_LIST_DIR}/jni")
 target_link_libraries(iree_djl_core PUBLIC iree-runtime-dist::runtime)
 # The curated iree-runtime-dist::runtime umbrella (libiree_runtime_unified.a)
 # does NOT include the io_parameters stack -- confirmed by nm: only
