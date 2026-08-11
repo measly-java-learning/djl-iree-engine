@@ -34,8 +34,10 @@ class LeakStressTest {
         float[] expected = {11f, 22f, 33f, 44f};
 
         long runtimesBefore = IreeNative.aliveRuntimes();
-        long closedForwardsBefore =
-                org.measly.iree.engine.IreeEngineStats.snapshot().getClosedForwardCount();
+        org.measly.iree.engine.IreeStatsSnapshot before =
+                org.measly.iree.engine.IreeEngineStats.snapshot();
+        long closedForwardsBefore = before.getClosedForwardCount();
+        int modelsLiveBefore = before.getModelsLive();
 
         for (int i = 0; i < ITERATIONS; i++) {
             try (Model model = Model.newInstance("add", "IREE")) {
@@ -57,7 +59,10 @@ class LeakStressTest {
                 "every loaded runtime must be released by close()");
         org.measly.iree.engine.IreeStatsSnapshot snapshot =
                 org.measly.iree.engine.IreeEngineStats.snapshot();
-        assertEquals(0, snapshot.getModelsLive(), "no model may remain in the registry");
+        assertEquals(
+                modelsLiveBefore,
+                snapshot.getModelsLive(),
+                "no model from this loop may remain in the registry");
         assertEquals(
                 closedForwardsBefore + ITERATIONS,
                 snapshot.getClosedForwardCount(),

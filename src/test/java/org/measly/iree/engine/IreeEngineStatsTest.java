@@ -40,9 +40,26 @@ class IreeEngineStatsTest {
         assertNotNull(snapshot.getJmxStatus());
     }
 
+    /**
+     * Finds this test's own model rather than assuming it is the only one live. The registry is
+     * process-wide static state; an absolute {@code getModels().get(0)} couples this assertion to
+     * whatever else happens to be loaded, so one unrelated failure cascades into this one.
+     */
+    private static IreeModelStats onlyModelNamed(IreeStatsSnapshot snapshot, String name) {
+        return snapshot.getModels().stream()
+                .filter(m -> name.equals(m.getName()))
+                .reduce(
+                        (a, b) -> {
+                            throw new AssertionError("more than one model named " + name);
+                        })
+                .orElseThrow(() -> new AssertionError("no model named " + name + " in snapshot"));
+    }
+
     @Test
     void snapshotTracksLiveModelAndCounters() throws Exception {
-        long loadedBefore = IreeEngineStats.snapshot().getModelsLoaded();
+        IreeStatsSnapshot before = IreeEngineStats.snapshot();
+        long loadedBefore = before.getModelsLoaded();
+        int liveBefore = before.getModelsLive();
         try (Model model = Model.newInstance("add", "IREE")) {
             model.load(MODEL_DIR, "add", ADD_OPTIONS);
             forwardOnce(model);
@@ -50,9 +67,9 @@ class IreeEngineStatsTest {
 
             IreeStatsSnapshot snapshot = IreeEngineStats.snapshot();
             assertEquals(loadedBefore + 1, snapshot.getModelsLoaded());
-            assertEquals(1, snapshot.getModelsLive());
+            assertEquals(liveBefore + 1, snapshot.getModelsLive());
 
-            IreeModelStats stats = snapshot.getModels().get(0);
+            IreeModelStats stats = onlyModelNamed(snapshot, "add");
             assertEquals("add", stats.getName());
             assertEquals("local-sync", stats.getDriver());
             assertEquals("module.add", stats.getEntryPoint());
@@ -69,7 +86,9 @@ class IreeEngineStatsTest {
 
     @Test
     void closingFoldsCountersIntoTheRollup() throws Exception {
-        long closedBefore = IreeEngineStats.snapshot().getClosedForwardCount();
+        IreeStatsSnapshot before = IreeEngineStats.snapshot();
+        long closedBefore = before.getClosedForwardCount();
+        int liveBefore = before.getModelsLive();
         try (Model model = Model.newInstance("add", "IREE")) {
             model.load(MODEL_DIR, "add", ADD_OPTIONS);
             forwardOnce(model);
@@ -77,7 +96,7 @@ class IreeEngineStatsTest {
             forwardOnce(model);
         }
         IreeStatsSnapshot after = IreeEngineStats.snapshot();
-        assertEquals(0, after.getModelsLive());
+        assertEquals(liveBefore, after.getModelsLive());
         assertEquals(closedBefore + 3, after.getClosedForwardCount());
         assertTrue(after.getClosedForwardTotalNanos() > 0);
     }
@@ -133,11 +152,12 @@ class IreeEngineStatsTest {
             forwardOnce(model);
 
             IreeStatsSnapshot snapshot = IreeEngineStats.snapshot();
-            assertEquals(
-                    1,
-                    snapshot.getModels().size(),
-                    "the failing model is dropped, the healthy one still reported");
-            assertEquals("add", snapshot.getModels().get(0).getName());
+            assertNotNull(
+                    onlyModelNamed(snapshot, "add"),
+                    "the healthy model is still reported alongside the failing one");
+            assertTrue(
+                    snapshot.getModels().stream().noneMatch(m -> "hostile".equals(m.getName())),
+                    "the failing model is dropped rather than failing the poll");
         } finally {
             IreeEngineStats.deregister(handle);
             // Keep the block reachable to here: a collection mid-test would fold it through the
@@ -150,14 +170,14 @@ class IreeEngineStatsTest {
      * The regression this guards: {@code nativeStatsAvailable} used to be inferred from whichever
      * models were live, so with none live it reported {@code true} unconditionally — the wrong
      * answer on a dist built with statistics off, at exactly the moment an operator polls to see
-     * how the deployment is configured.
+     * how the deployment is configured. Sampled either side of a model's lifetime as well as
+     * during it, since the population is what the answer must not depend on.
      */
     @Test
-    void nativeStatsAvailableMatchesTheBuildWithNoModelsLive() throws Exception {
+    void nativeStatsAvailableMatchesTheBuildRegardlessOfLiveModels() throws Exception {
         IreeNative.ensureLoaded();
         boolean fromNative = IreeNative.statisticsAvailable();
 
-        assertEquals(0, IreeEngineStats.snapshot().getModelsLive());
         assertEquals(
                 fromNative,
                 IreeEngineStats.snapshot().isNativeStatsAvailable(),

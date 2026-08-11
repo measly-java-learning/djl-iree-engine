@@ -313,7 +313,11 @@ class IreeNativeTest {
             assertEquals(IreeNative.STAT_LENGTH, before.length);
             assertEquals(0L, before[IreeNative.STAT_WRAPPED_IMPORTS]);
             assertEquals(0L, before[IreeNative.STAT_STAGED_IMPORTS]);
-            assertEquals(1L, before[IreeNative.STAT_STATISTICS_AVAILABLE]);
+            // Against the build probe, not a hardcoded 1: this is a compile-time property, and
+            // a dist built with statistics off is a supported configuration, not a failure.
+            assertEquals(
+                    IreeNative.statisticsAvailable() ? 1L : 0L,
+                    before[IreeNative.STAT_STATISTICS_AVAILABLE]);
 
             assertArrayEquals(ADD_SUM, invokeAdd(handle), 1e-6f);
 
@@ -324,16 +328,13 @@ class IreeNativeTest {
                     2L,
                     after[IreeNative.STAT_WRAPPED_IMPORTS]
                             + after[IreeNative.STAT_STAGED_IMPORTS]);
-            // A JVM direct ByteBuffer misses IREE's 64-byte alignment precondition,
-            // so directFloats() input stages rather than wrapping. This is the
-            // engine's defining performance cliff and the reason the gauge exists.
-            // Relaxed to the sum assertion: malloc can hand a 64-byte-aligned
-            // address back, so a wrapped outcome for one input is a genuine,
-            // observed possibility (see commit message).
-            assertTrue(
-                    after[IreeNative.STAT_STAGED_IMPORTS]
-                                    + after[IreeNative.STAT_WRAPPED_IMPORTS]
-                            == 2L);
+            // A JVM direct ByteBuffer misses IREE's 64-byte alignment precondition, so a
+            // directFloats() input usually stages rather than wraps — the engine's defining
+            // performance cliff and the reason this gauge exists. Only the sum is asserted,
+            // above: malloc can hand back a 64-byte-aligned address, making a wrapped outcome
+            // a genuine and observed possibility. The harness's IntraRuntimeInvokeCycle pins
+            // the staged path deterministically with a deliberately misaligned buffer.
+            //
             // stagingBytes>0 holds only when at least one input staged; both inputs can
             // legitimately wrap when malloc happens to return 64-byte-aligned addresses.
             // The invariant that matters: a staged input must have left a cached footprint.
