@@ -18,6 +18,7 @@
 #include <string>
 #include <vector>
 
+#include "core/aligned_alloc.h"
 #include "core/iree_runtime.h"
 
 using measly::iree::InputDesc;
@@ -80,14 +81,31 @@ void IntraRuntimeInvokeCycle(const std::vector<std::byte>& vmfb, const char* dri
   auto runtime = IreeRuntime::Load(vmfb, kEntryPoint, driver,
                                    std::span<const ParameterScope>{},
                                    IreeRuntime::StagingMode::kCachedMapWrite);
-  const float lhs[4] = {1.0f, 2.0f, 3.0f, 4.0f};
-  const float rhs[4] = {10.0f, 20.0f, 30.0f, 40.0f};
+  // DELIBERATELY MISALIGNED. Stack arrays would leave the staging assertions at
+  // the mercy of where the frame happens to land: a 64-byte-aligned frame makes
+  // both inputs import zero-copy, stagingBytes stays 0, and
+  // `stagingAfterFirst == stats.stagingBytes` becomes 0 == 0 — a green
+  // assertion that exercised nothing. Offsetting past the boundary forces the
+  // staging fallback every run, on every host.
+  auto* backing = static_cast<std::byte*>(measly::iree::AlignedAlloc(256));
+  auto* lhs = reinterpret_cast<float*>(backing + 4);
+  auto* rhs = reinterpret_cast<float*>(backing + 128 + 4);
+  for (int i = 0; i < 4; ++i) {
+    lhs[i] = static_cast<float>(i + 1);
+    rhs[i] = static_cast<float>((i + 1) * 10);
+  }
   std::vector<InputDesc> inputs = {
-      {lhs, sizeof(lhs), {4}, kF32},
-      {rhs, sizeof(rhs), {4}, kF32},
+      {lhs, 4 * sizeof(float), {4}, kF32},
+      {rhs, 4 * sizeof(float), {4}, kF32},
   };
 
   (void)runtime->Invoke(inputs);
+  if (runtime->Stats().stagedImports != 2) {
+    std::fprintf(stderr,
+                 "expected both misaligned inputs to stage, got %llu staged\n",
+                 static_cast<unsigned long long>(runtime->Stats().stagedImports));
+    std::exit(70);
+  }
   // Baselines AFTER the first invoke: the first call allocates the grow-only
   // cached staging buffers (one DEVICE_LOCAL buffer per input slot, retained
   // for the runtime's lifetime by design), so a pre-invoke deviceBytesLive
@@ -95,6 +113,10 @@ void IntraRuntimeInvokeCycle(const std::vector<std::byte>& vmfb, const char* dri
   // fail structurally. What these baselines detect is GROWTH across invokes.
   const uint64_t deviceBaseline = runtime->Stats().deviceBytesLive;
   const uint64_t stagingAfterFirst = runtime->Stats().stagingBytes;
+  if (stagingAfterFirst == 0) {
+    std::fprintf(stderr, "staging baseline is 0; the growth check would be vacuous\n");
+    std::exit(70);
+  }
 
   for (int i = 0; i < 500; ++i) {
     (void)runtime->Invoke(inputs);
@@ -121,6 +143,8 @@ void IntraRuntimeInvokeCycle(const std::vector<std::byte>& vmfb, const char* dri
                                                  stats.stagedImports));
     std::exit(73);
   }
+
+  measly::iree::AlignedFree(backing);
 }
 
 // Every throw path, looped. This is the highest-value part of the harness:
@@ -223,6 +247,19 @@ void ParamCycle(const std::vector<std::byte>& vmfb, const char* driver,
     }
   }
 }
+// Every exit path must run this, including the parameter-bound early return —
+// that is the path most likely to strand a runtime, since it holds io_parameters
+// resources the others never touch.
+bool RuntimeCensusIsClean() {
+  const int64_t alive = measly::iree::AliveRuntimeCount();
+  if (alive != 0) {
+    std::fprintf(stderr, "runtimes still alive at exit: %lld\n",
+                 static_cast<long long>(alive));
+    return false;
+  }
+  return true;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -253,6 +290,7 @@ int main(int argc, char** argv) {
     // add-specific Happy/Error/ImportEscape paths above.
     for (int i = 0; i < iterations; ++i) ParamCycle(vmfb, driver, params);
     std::printf("param cycles: %d cycles ok\n", iterations);
+    if (!RuntimeCensusIsClean()) return 74;
     std::printf("HARNESS PASS\n");
     return 0;
   }
@@ -269,11 +307,7 @@ int main(int argc, char** argv) {
   ImportEscapeCheck(vmfb, driver);
   std::printf("import escape check ok\n");
 
-  if (measly::iree::AliveRuntimeCount() != 0) {
-    std::fprintf(stderr, "runtimes still alive at exit: %lld\n",
-                 static_cast<long long>(measly::iree::AliveRuntimeCount()));
-    return 74;
-  }
+  if (!RuntimeCensusIsClean()) return 74;
 
   std::printf("HARNESS PASS\n");
   return 0;
