@@ -15,23 +15,14 @@ jobs:
         include:
           - platform: linux-x86_64
             runner: ubuntu-latest
-            image: quay.io/pypa/manylinux_2_28_x86_64
-            corretto-jdk-url: https://corretto.aws/downloads/latest/amazon-corretto-8-x64-linux-jdk.rpm
           - platform: linux-aarch64
             runner: ubuntu-24.04-arm
-            image: quay.io/pypa/manylinux_2_28_aarch64
-            corretto-jdk-url: https://corretto.aws/downloads/latest/amazon-corretto-8-aarch64-linux-jdk.rpm
     runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
     steps:
       - name: Checkout djl-iree-engine repository
         uses: actions/checkout@v7
-
-      # Use a generic name for the RPM file
-      - name: Download Corretto JDK 8 RPM
-        run: |
-            curl -L -o amazon-corretto-linux-jdk.rpm ${{ matrix.corretto-jdk-url }}
 
       # Provenance gate: prove the pinned runtime tarball was built by Repo A's CI before we link
       # against it. URL_HASH in native/CMakeLists.txt covers integrity; this covers provenance.
@@ -45,6 +36,21 @@ jobs:
           gh attestation verify runtime.tgz --repo measly-java-learning/iree-runtime-dist
           rm -f runtime.tgz
 
+      # The toolchain image: manylinux_2_28 at a dated tag plus the JNI headers, ninja, and ASan
+      # runtime the base does not ship, all at pinned versions. Built here rather than pulled from
+      # a registry -- warm-build-image.yml keeps the layers in the GHA cache, so this is a cache
+      # hit rather than a dnf round-trip. `load: true` puts the image in the local daemon for the
+      # docker run steps below.
+      - uses: docker/setup-buildx-action@v4.2.0
+      - name: Build the pinned toolchain image
+        uses: docker/build-push-action@v7.3.0
+        with:
+          context: docker
+          file: "docker/${{ matrix.platform }}.Dockerfile"
+          tags: djl-iree-engine-build:${{ matrix.platform }}
+          load: true
+          cache-from: type=gha,scope=${{ matrix.platform }}
+
       # This is very similar to how `local_build_wrapper.sh` executes build
       # which enables testing outside of GHA
       - name: Build the libiree_djl shim
@@ -52,7 +58,7 @@ jobs:
           docker run --rm \
             -v ${{ github.workspace }}:/workspace \
             -w /workspace \
-            ${{ matrix.image }} \
+            djl-iree-engine-build:${{ matrix.platform }} \
             /bin/bash /workspace/native/build.sh
 
       - name: Run native QA gate (Catch2 units + ASan/LSan leak harness)
@@ -60,7 +66,7 @@ jobs:
           docker run --rm \
             -v ${{ github.workspace }}:/workspace \
             -w /workspace \
-            ${{ matrix.image }} \
+            djl-iree-engine-build:${{ matrix.platform }} \
             /bin/bash /workspace/native/build_qa.sh
 
       - name: Store libiree_djl shim
