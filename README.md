@@ -247,7 +247,11 @@ clangd infers their flags from `core/iree_runtime.cpp`, which includes all three
 ## Native QA
 
 ```bash
-./native/build/iree_runtime_test                      # Catch2 units (9 cases)
+# Catch2 units (9 cases). native/build.sh defaults to -DIREE_DJL_BUILD_TESTS=OFF — the shipping
+# build stages only the .so, so it no longer clones and compiles Catch2. Opt back in to get the
+# test binaries in native/build, or just run ./native/build_qa.sh, which builds them either way.
+./native/build.sh -DIREE_DJL_BUILD_TESTS=ON
+./native/build/iree_runtime_test
 
 # ASan/LSan sanitizer gate (this is the go/no-go checkpoint):
 rm -rf native/build && ./native/build.sh -DIREE_DJL_SANITIZE=ON
