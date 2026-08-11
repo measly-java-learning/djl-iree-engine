@@ -16,8 +16,10 @@ public class ManifestException extends IOException {
      * requires} key) and by {@link ModelResolver} for a manifest asset that resolves outside its
      * manifest's directory.
      *
-     * @param message a human-readable description; by convention it is prefixed with the
-     *     source label (file path, or {@code "<implicit manifest>"}) that produced it
+     * @param message a human-readable description naming the source label (file path, or
+     *     {@code "<implicit manifest>"}) that produced it: {@link ModelManifest#parse}'s schema
+     *     errors prefix it ({@code sourceLabel + ": ..."}); {@link ModelResolver}'s containment
+     *     errors mention it inline instead ({@code "... referenced by " + sourceLabel + " ..."})
      */
     public ManifestException(String message) {
         super(message);

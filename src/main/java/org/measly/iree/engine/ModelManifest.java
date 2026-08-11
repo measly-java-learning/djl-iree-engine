@@ -50,7 +50,10 @@ public record ModelManifest(int schemaVersion, String program, String entryPoint
      * @param json the manifest document text
      * @param sourceLabel identifies the document in error messages only (e.g. a file path, or
      *     {@code "<implicit manifest>"} for a bare {@code .vmfb}); carries no other meaning
-     * @return the parsed manifest
+     * @return the parsed manifest: {@code schemaVersion} is a validated integer in {@code
+     *     [1, SUPPORTED_SCHEMA_VERSION]} and {@code program} a non-null string; {@code
+     *     entryPoint} may be {@code null}, {@code parameters} is never {@code null} (empty when
+     *     the document omits it)
      * @throws ManifestException if {@code json} is not valid JSON, is empty, or violates any
      *     schema rule — see the class comment for the specific cases
      */
