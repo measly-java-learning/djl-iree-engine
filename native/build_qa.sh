@@ -68,10 +68,13 @@ else
     *) echo "unsupported arch: $(uname -m)" >&2; exit 1 ;;
   esac
 
-  # QA is the only ASan consumer; install the toolset's ASan runtime here.
-  if command -v dnf >/dev/null 2>&1; then
+  # QA is the only ASan consumer. The pinned toolchain image bakes the runtime in at the base
+  # image's own compiler revision; this dnf call is the fallback for host runs and bare bases.
+  TOOLSET_VER="$(gcc -dumpversion | cut -d. -f1)"
+  if rpm -q --quiet "gcc-toolset-${TOOLSET_VER}-libasan-devel"; then
+    echo "--- ASan runtime already present (gcc-toolset-${TOOLSET_VER}-libasan-devel) ---"
+  elif command -v dnf >/dev/null 2>&1; then
     echo "--- Installing ASan runtime (dnf), may appear to hang ---"
-    TOOLSET_VER="$(gcc -dumpversion | cut -d. -f1)"
     dnf install -y -q "gcc-toolset-${TOOLSET_VER}-libasan-devel" || true
   fi
 
