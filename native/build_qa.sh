@@ -23,6 +23,14 @@ case "$(uname -s)" in
   *)            IR_HOST_OS=linux ;;
 esac
 
+# shellcheck source=native/container_env.sh
+. "${REPO_ROOT}/native/container_env.sh"
+if [ "${IR_HOST_OS}" = "linux" ]; then
+  # native/qa is this script's only output tree. Without this, wrapper-driven QA runs leave it
+  # root-owned on the host — the exact gap native/build.sh's trap has always covered for builds.
+  ir_chown_outputs_on_exit native/qa
+fi
+
 if [ "${IR_HOST_OS}" = "windows" ]; then
   command -v cl >/dev/null 2>&1 || { echo "cl.exe not on PATH: activate the VS dev shell first"; exit 1; }
   JOBS="${JOBS:-${NUMBER_OF_PROCESSORS:-4}}"

@@ -12,20 +12,15 @@ case "$(uname -s)" in
   *)            IR_HOST_OS=linux ;;
 esac
 
-# Container bind-mount outputs are root-owned on the host; chown them back on exit (any status).
-cleanup() {
-  rc=$?
-  if [ -n "${HOST_UID:-}" ]; then
-    chown -R "${HOST_UID}:${HOST_GID}" "${build_dir}" src/main/resources/native/linux* 2>/dev/null || true
-  fi
-  exit "$rc"
-}
-[ "${IR_HOST_OS}" = "linux" ] && trap cleanup EXIT
-
-
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 build_dir="${here}/build"
 build_type="${BUILD_TYPE:-RelWithDebInfo}"
+
+# shellcheck source=native/container_env.sh
+. "${here}/container_env.sh"
+if [ "${IR_HOST_OS}" = "linux" ]; then
+  ir_chown_outputs_on_exit "${build_dir}" 'src/main/resources/native/linux*'
+fi
 
 
 # This script expects:
