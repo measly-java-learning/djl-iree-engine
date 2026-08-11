@@ -434,3 +434,39 @@ extern "C" JNIEXPORT jlong JNICALL
 Java_org_measly_iree_jni_IreeNative_aliveAlignedBuffers(JNIEnv*, jclass) {
   return static_cast<jlong>(AlignedLiveCount());
 }
+
+// Cold-path observability read. Deliberately returns null — not an exception —
+// for a closed handle: the caller is a monitoring poll whose contract is that
+// it never throws. Every other entry point in this file throws on a closed
+// handle; this one must not.
+extern "C" JNIEXPORT jlongArray JNICALL
+Java_org_measly_iree_jni_IreeNative_stats(JNIEnv* env, jclass, jlong handle) {
+  IreeRuntime* runtime = AsRuntime(handle);
+  if (runtime == nullptr) {
+    return nullptr;
+  }
+
+  measly::iree::RuntimeStats stats = runtime->Stats();
+
+  jlongArray out = env->NewLongArray(6);
+  if (out == nullptr) {
+    return nullptr;  // OOM pending; the JVM throws on return.
+  }
+  jlong values[6] = {
+      static_cast<jlong>(stats.wrappedImports),
+      static_cast<jlong>(stats.stagedImports),
+      static_cast<jlong>(stats.stagingBytes),
+      static_cast<jlong>(stats.deviceBytesPeak),
+      static_cast<jlong>(stats.deviceBytesLive),
+      static_cast<jlong>(stats.statisticsAvailable ? 1 : 0),
+  };
+  env->SetLongArrayRegion(out, 0, 6, values);
+  return out;
+}
+
+// Native-side leak probe, companion to aliveAlignedBuffers: a retained-forever
+// runtime is reachable and therefore invisible to LSan, but visible here.
+extern "C" JNIEXPORT jlong JNICALL
+Java_org_measly_iree_jni_IreeNative_aliveRuntimes(JNIEnv*, jclass) {
+  return static_cast<jlong>(measly::iree::AliveRuntimeCount());
+}

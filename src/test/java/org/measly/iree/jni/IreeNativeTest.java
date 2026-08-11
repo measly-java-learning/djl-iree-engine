@@ -2,6 +2,8 @@ package org.measly.iree.jni;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -294,5 +296,56 @@ class IreeNativeTest {
             IreeNative.close(via3);
             IreeNative.close(via5);
         }
+    }
+
+    @Test
+    void statsReturnsNullForClosedHandle() {
+        IreeNative.ensureLoaded();
+        assertNull(IreeNative.stats(0L));
+    }
+
+    @Test
+    void statsReportsImportOutcomesAndLength() throws Exception {
+        long handle = IreeNative.load(addVmfb(), ENTRY_POINT, "local-sync");
+        try {
+            long[] before = IreeNative.stats(handle);
+            assertNotNull(before);
+            assertEquals(IreeNative.STAT_LENGTH, before.length);
+            assertEquals(0L, before[IreeNative.STAT_WRAPPED_IMPORTS]);
+            assertEquals(0L, before[IreeNative.STAT_STAGED_IMPORTS]);
+            assertEquals(1L, before[IreeNative.STAT_STATISTICS_AVAILABLE]);
+
+            assertArrayEquals(ADD_SUM, invokeAdd(handle), 1e-6f);
+
+            long[] after = IreeNative.stats(handle);
+            assertNotNull(after);
+            // Two inputs crossed; each is either wrapped or staged, never both.
+            assertEquals(
+                    2L,
+                    after[IreeNative.STAT_WRAPPED_IMPORTS]
+                            + after[IreeNative.STAT_STAGED_IMPORTS]);
+            // A JVM direct ByteBuffer misses IREE's 64-byte alignment precondition,
+            // so directFloats() input stages rather than wrapping. This is the
+            // engine's defining performance cliff and the reason the gauge exists.
+            // Relaxed to the sum assertion: malloc can hand a 64-byte-aligned
+            // address back, so a wrapped outcome for one input is a genuine,
+            // observed possibility (see commit message).
+            assertTrue(
+                    after[IreeNative.STAT_STAGED_IMPORTS]
+                                    + after[IreeNative.STAT_WRAPPED_IMPORTS]
+                            == 2L);
+            assertTrue(after[IreeNative.STAT_STAGING_BYTES] > 0L);
+        } finally {
+            IreeNative.close(handle);
+        }
+    }
+
+    @Test
+    void aliveRuntimesTracksLoadAndClose() throws Exception {
+        long baseline = IreeNative.aliveRuntimes();
+        long handle = IreeNative.load(addVmfb(), ENTRY_POINT, "local-sync");
+        assertEquals(baseline + 1, IreeNative.aliveRuntimes());
+        IreeNative.close(handle);
+        assertEquals(baseline, IreeNative.aliveRuntimes());
     }
 }
