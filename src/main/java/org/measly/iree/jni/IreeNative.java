@@ -71,6 +71,10 @@ public final class IreeNative {
      * Per-input import outcome from the last invoke: 1 = zero-copy wrap,
      * 0 = staged copy. Exposed so tests can assert what actually happened
      * rather than assuming a borrow.
+     *
+     * <p>Production callers should use {@link org.measly.iree.engine.IreeEngineStats#snapshot()}'s
+     * cumulative {@code wrappedImports}/{@code stagedImports} instead — this per-call query is
+     * last-call-only state.
      */
     public static native int[] lastImportOutcomes(long handle);
 

@@ -23,6 +23,44 @@ extracted on first load to a temp file (`java.io.tmpdir`), deleted on JVM exit. 
 production engine, there is no content-addressed extraction cache here — see
 `LibUtils`'s javadoc for why that's deferred.
 
+### Observability
+
+`IreeEngineStats.snapshot()` returns an immutable view of engine configuration, process
+totals, and every live model. It never throws — a monitoring poll must not be the thing that
+breaks production.
+
+```java
+IreeStatsSnapshot stats = IreeEngineStats.snapshot();
+for (IreeModelStats model : stats.getModels()) {
+    long imports = model.getWrappedImports() + model.getStagedImports();
+    double stagedRate = imports == 0 ? 0.0 : (double) model.getStagedImports() / imports;
+    System.out.printf(
+            "%s: %d forwards, %.1f%% staged, %d bytes staging%n",
+            model.getName(), model.getForwardCount(), stagedRate * 100, model.getStagingBytes());
+}
+```
+
+**The staged-import rate is the signal specific to this engine.** IREE imports a host buffer
+zero-copy only when it meets a 64-byte alignment precondition. A Java direct `ByteBuffer`
+does not — the JVM guarantees nothing stronger than 8-byte alignment — so inputs handed
+straight from `NDArray.toByteBuffer()` stage a copy on every call. `stagedImports /
+(stagedImports + wrappedImports)` is how you find out whether that is happening to you.
+
+**Byte gauges use `-1` for "unavailable" and `0` for "genuinely zero".** `stagingBytes == 0`
+means nothing has staged yet, which is a real state. `deviceBytesPeak == -1` means IREE's
+allocator statistics were compiled out of the runtime, so the figure is unknowable — check
+`isNativeStatsAvailable()`.
+
+**JMX.** The engine registers an MXBean at `org.measly.iree:type=IreeEngineStats` on the first
+model load. Disable with `-Dai.djl.iree.jmx_enabled=false`, or drive it explicitly via
+`IreeEngineStats.registerMBean()` / `unregisterMBean()`. Registration failure logs one warning
+and is reported as `getJmxStatus()` — it never fails a model load.
+
+**Not `ai.djl.metric.Metrics`.** DJL's own metrics are a time-series buffer suited to
+benchmarking: `Metrics.limit` defaults to 0, meaning uncapped, so every `predict()` retains
+three `Metric` objects indefinitely unless you wire both `setLimit` and `setOnLimit`. Use it
+for profiling; use `IreeEngineStats` for always-on monitoring.
+
 ### Declaring the dependency
 
 The native jar is published as a Gradle variant with a per-platform capability, so Gradle

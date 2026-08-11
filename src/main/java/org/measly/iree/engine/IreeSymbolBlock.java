@@ -109,7 +109,13 @@ public class IreeSymbolBlock extends AbstractSymbolBlock implements AutoCloseabl
         return new ParameterList();
     }
 
-    /** Per-input import outcome from the last forward: 1 = wrapped, 0 = staged. */
+    /**
+     * Per-input import outcome from the last forward: 1 = wrapped, 0 = staged.
+     *
+     * <p>Production callers should use {@link IreeEngineStats#snapshot()}'s cumulative
+     * {@code wrappedImports}/{@code stagedImports} instead — this per-call query is
+     * last-call-only state.
+     */
     public int[] getLastImportOutcomes() {
         return IreeNative.lastImportOutcomes(handle);
     }
