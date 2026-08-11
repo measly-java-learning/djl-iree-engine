@@ -474,3 +474,50 @@ answerable from current context, are in scope for this cycle:
 6. **The observation that there is no PAL/logging bridge in `native/jni/` (line 54) is still
    true**, and this design's out-of-scope section is the current statement of intent on it.
    Cross-reference rather than restate.
+
+## Measured overhead
+
+Measured 2026-08-11 on the development host. JMH (`me.champeau.jmh` 0.7.3),
+`MobilenetBenchmark` only, fork 1, warmup 5×3 s, measurement
+5×10 s, `-Xmx4g`. Before = `7d91843` (parent of the first `forwardInternal` change, Task 5's
+commit `cc8e796`), built from a scratch worktree so the native library matches; after = branch
+HEAD (`17809e5`) with the counters, same jar layout, same flags. Host: 11th Gen Intel(R) Core(TM)
+i7-1185G7 @ 3.00 GHz, `nproc` = 8, runs pinned to cores 0-3 (`taskset -c 0-3`) under a
+`systemd-run --user --scope -p MemoryMax=8G` cgroup cap.
+
+| Arm | Before (ms/op) | After (ms/op) | Verdict |
+|---|---|---|---|
+| steadyState, `local-sync` | 70.576 ± 1.687 | 71.611 ± 3.459 | within error bar (+1.5%) |
+| steadyState, `local-task` | 72.824 ± 5.551 | 77.150 ± 12.079 | within error bar (+5.9%) |
+| coldStart, `local-sync` | 75.264 ± 2.176 | 74.342 ± 3.442 | within error bar (−1.2%) |
+| coldStart, `local-task` | 76.527 ± 5.253 | 62.857 ± 4.440 | faster, outside pre-change bar (−17.9%) |
+
+**Verdict: the hot-path premise held.** The two `System.nanoTime()` brackets and two volatile
+increments per forward cost nothing measurable on the forward hot path. The stop condition in
+the plan's step 3 applies to the steady-state arms (its language: "Compare the steady-state
+centers and error bars"), and both sit inside their pre-change 99.9% error bars: `local-sync`
+70.576 → 71.611 (+1.5%), `local-task` 72.824 → 77.150 (+5.9%). The two coldStart (single-shot)
+arms are reported for completeness and are not a counter signal: `local-sync` is within its bar,
+and `local-task` came in 17.9% *faster* with a non-overlapping bar — counters cannot make a load
+faster, and a single-shot arm is dominated by model-load and page-cache warmth (the before arm
+loaded the model from a freshly copied worktree tree; the after arm from a warm cache). Nothing
+in these numbers is attributable to the counters, in either direction.
+
+Methodology notes, for the record:
+
+- **One contaminated run was discarded, not tuned away.** A first after-arm measurement returned
+  `246.852 ± 25.064` on the `local-sync` steady-state arm because the run overlapped the
+  baseline worktree's concurrent container native build (Ninja, 8 cores). Re-run with the
+  machine quiescent, the arm measured `71.611 ± 3.459`. The counters cannot plausibly account
+  for 176 ms (they are ~50-100 ns of work), and the overlap is timestamp-verified; the anomaly
+  was measurement contamination.
+- **`CopyCostBenchmark` was excluded from both arms.** Its `n=16777216` parameter (64 MB native
+  direct buffer per op at ~2 ms/op) balloons JVM native RSS to 20+ GiB regardless of the
+  counters — it does not call `forwardInternal` at all, and it is the root cause of the OOM
+  kill that interrupted this task's first attempt. It is unrelated to the question this section
+  answers.
+- **Memory containment:** JMH runs on this host now execute under
+  `systemd-run --user --scope -p MemoryMax=8G taskset -c 0-3 timeout 900`, and the JMH fork is
+  a descendant of the scoped process (direct `java -jar`, not via the Gradle daemon, whose
+  children would escape the cgroup). This converts a 20+ GiB runaway JVM into a contained,
+  recoverable cgroup kill.
