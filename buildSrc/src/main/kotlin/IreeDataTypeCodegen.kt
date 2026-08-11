@@ -251,12 +251,16 @@ abstract class IreeDataTypeCodegen : DefaultTask() {
         sb.appendLine()
 
         // -- Constants for every mapped IREE element type --
-        sb.appendLine("    // IREE element type constants")
+        // Javadoc, not a line comment: these are public API and appear in the
+        // published javadoc jar, where a trailing // comment is invisible.
         val sortedMappings = mappings.sortedBy { it.iree }
         for (m in sortedMappings) {
             val value = manifest[m.iree]!!.value
             val hex = "0x${value.toUInt().toString(16).uppercase()}"
-            sb.appendLine("    public static final int ${m.iree} = $value; // $hex")
+            sb.appendLine(
+                "    /** IREE {@code iree_hal_element_type_t} $hex, mapped to DJL {@link DataType#${m.djl}}. */"
+            )
+            sb.appendLine("    public static final int ${m.iree} = $value;")
         }
         sb.appendLine()
 
