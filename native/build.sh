@@ -24,7 +24,7 @@ fi
 
 
 # This script expects:
-# 1. To be running inside the pinned toolchain image (docker/linux-<platform>.Dockerfile), which
+# 1. To be running inside the pinned toolchain image (docker/<platform>.Dockerfile), which
 #    bakes the glibc-2.28 floor via its manylinux_2_28 base and supplies JAVA_HOME + ninja
 # 2. Failing that, a manylinux_2_28 base with amazon-corretto-linux-jdk.rpm at /workspace
 # The runtime tarball is fetched by CMake during the shim configure (also inside the container,

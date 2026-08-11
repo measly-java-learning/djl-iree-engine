@@ -227,7 +227,7 @@ paths and container-absolute paths that host clangd cannot resolve. Four things 
   shim. The script honors `JAVA_HOME` if set, otherwise derives it from `java` on PATH or
   `/usr/lib/jvm`, and fails loudly if none exists. This affects the editor only; the shipped
   `.so` is always built against the Corretto 8 headers baked into the pinned build image
-  (`docker/linux-<platform>.Dockerfile`), whatever your host has.
+  (`docker/<platform>.Dockerfile`), whatever your host has.
 - **Configure hits the network**, on the same terms as any build: the SHA256-pinned
   `iree-runtime-dist` tarball plus a Catch2 clone from GitHub.
 - **Sanitizer gates don't touch this database.** `native/qa` is a separate tree, so
