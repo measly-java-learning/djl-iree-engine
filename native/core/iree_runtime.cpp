@@ -22,6 +22,14 @@ int64_t AliveRuntimeCount() {
   return g_runtimes_live.load(std::memory_order_relaxed);
 }
 
+bool StatisticsAvailable() {
+#if IREE_STATISTICS_ENABLE
+  return true;
+#else
+  return false;
+#endif
+}
+
 struct RuntimeState {
   // Owns a copy of the flatbuffer. append_bytecode_module_from_memory with a
   // null allocator does NOT copy, so these bytes must outlive the session.
@@ -253,8 +261,8 @@ RuntimeStats IreeRuntime::Stats() const {
   // model's thread — see RuntimeState::stagingBytesTotal.
   out.stagingBytes = state_->stagingBytesTotal.load(std::memory_order_relaxed);
 
+  out.statisticsAvailable = StatisticsAvailable();
 #if IREE_STATISTICS_ENABLE
-  out.statisticsAvailable = true;
   iree_hal_allocator_statistics_t stats;
   memset(&stats, 0, sizeof(stats));
   iree_hal_allocator_query_statistics(
@@ -268,7 +276,6 @@ RuntimeStats IreeRuntime::Stats() const {
                                   stats.device_bytes_freed)
           : 0;
 #else
-  out.statisticsAvailable = false;
   out.deviceBytesPeak = 0;
   out.deviceBytesLive = 0;
 #endif

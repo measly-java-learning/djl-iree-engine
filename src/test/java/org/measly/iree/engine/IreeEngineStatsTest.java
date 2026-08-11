@@ -14,6 +14,7 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
+import org.measly.iree.jni.IreeNative;
 
 class IreeEngineStatsTest {
 
@@ -143,6 +144,31 @@ class IreeEngineStatsTest {
             // reference queue instead, defeating the point.
             assertNotNull(hostile);
         }
+    }
+
+    /**
+     * The regression this guards: {@code nativeStatsAvailable} used to be inferred from whichever
+     * models were live, so with none live it reported {@code true} unconditionally — the wrong
+     * answer on a dist built with statistics off, at exactly the moment an operator polls to see
+     * how the deployment is configured.
+     */
+    @Test
+    void nativeStatsAvailableMatchesTheBuildWithNoModelsLive() throws Exception {
+        IreeNative.ensureLoaded();
+        boolean fromNative = IreeNative.statisticsAvailable();
+
+        assertEquals(0, IreeEngineStats.snapshot().getModelsLive());
+        assertEquals(
+                fromNative,
+                IreeEngineStats.snapshot().isNativeStatsAvailable(),
+                "the flag is a build property, not a function of the live-model population");
+
+        try (Model model = Model.newInstance("add", "IREE")) {
+            model.load(MODEL_DIR, "add", ADD_OPTIONS);
+            forwardOnce(model);
+            assertEquals(fromNative, IreeEngineStats.snapshot().isNativeStatsAvailable());
+        }
+        assertEquals(fromNative, IreeEngineStats.snapshot().isNativeStatsAvailable());
     }
 
     @Test

@@ -695,3 +695,13 @@ TEST_CASE("Stats replaces rather than accumulates a regrown staging slot") {
 
   measly::iree::AlignedFree(block);
 }
+
+TEST_CASE("StatisticsAvailable answers without a runtime and agrees with Stats") {
+  // Handle-free by design: the snapshot must be able to report this build
+  // property with no model loaded. Agreement with the per-runtime field is what
+  // makes the two interchangeable.
+  const bool standalone = measly::iree::StatisticsAvailable();
+  auto vmfb = ReadFile(kAddVmfb);
+  auto runtime = IreeRuntime::Load(vmfb, kEntryPoint, "local-sync");
+  REQUIRE(runtime->Stats().statisticsAvailable == standalone);
+}

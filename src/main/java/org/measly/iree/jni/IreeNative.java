@@ -118,6 +118,19 @@ public final class IreeNative {
      */
     public static native long aliveRuntimes();
 
+    /**
+     * Whether IREE's HAL allocator statistics are compiled into this build —
+     * that is, whether {@link #STAT_DEVICE_BYTES_PEAK} and
+     * {@link #STAT_DEVICE_BYTES_LIVE} carry meaning.
+     *
+     * <p>Takes no handle on purpose. This is a build property fixed at compile
+     * time (see the {@code IREE_STATISTICS_ENABLE} agreement check in
+     * {@code native/CMakeLists.txt}), so a monitoring poll must be able to
+     * report it before the first model loads and after the last one closes —
+     * neither of which a per-handle read can do.
+     */
+    public static native boolean statisticsAvailable();
+
     /** Forces the class to initialise, loading the library. */
     public static void ensureLoaded() {
         LibUtils.loadLibrary();

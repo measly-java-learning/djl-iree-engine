@@ -144,10 +144,10 @@ public class IreeSymbolBlock extends AbstractSymbolBlock implements AutoCloseabl
      * only partially initialised.
      *
      * <p>Returning {@code null} degrades exactly as a closed handle does: every byte gauge reads
-     * {@code -1}, the documented "unavailable" encoding, and {@code lastStatsStatus} is left
-     * untouched so an unreadable poll never flips the process-wide {@code nativeStatsAvailable}
-     * flag. Logged at debug rather than warn because a poll loop would otherwise flood the log
-     * at its own polling rate.
+     * {@code -1}, the documented "unavailable" encoding. The process-wide {@code
+     * nativeStatsAvailable} flag is unaffected — it comes from a handle-free build probe, not
+     * from this read. Logged at debug rather than warn because a poll loop would otherwise flood
+     * the log at its own polling rate.
      *
      * <p>Callers must already hold {@code statsLock}.
      */
@@ -191,8 +191,6 @@ public class IreeSymbolBlock extends AbstractSymbolBlock implements AutoCloseabl
                         deviceLive = raw[IreeNative.STAT_DEVICE_BYTES_LIVE];
                     }
                     c.recordNativeImports(wrapped, staged);
-                    c.recordNativeStatsStatus(
-                            raw[IreeNative.STAT_STATISTICS_AVAILABLE] == 1L ? 1 : 0);
                 }
             }
         }
@@ -238,8 +236,6 @@ public class IreeSymbolBlock extends AbstractSymbolBlock implements AutoCloseabl
                         c.recordNativeImports(
                                 raw[IreeNative.STAT_WRAPPED_IMPORTS],
                                 raw[IreeNative.STAT_STAGED_IMPORTS]);
-                        c.recordNativeStatsStatus(
-                                raw[IreeNative.STAT_STATISTICS_AVAILABLE] == 1L ? 1 : 0);
                     }
                 }
                 IreeEngineStats.deregister(handle);

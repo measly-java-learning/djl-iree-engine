@@ -14,6 +14,7 @@ import java.util.concurrent.atomic.AtomicLong;
 import javax.management.InstanceNotFoundException;
 import javax.management.MBeanServer;
 import javax.management.ObjectName;
+import org.measly.iree.jni.IreeNative;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -55,6 +56,9 @@ public final class IreeEngineStats {
     private static final AtomicLong CLOSED_FORWARD_TOTAL_NANOS = new AtomicLong();
     private static final AtomicLong CLOSED_WRAPPED_IMPORTS = new AtomicLong();
     private static final AtomicLong CLOSED_STAGED_IMPORTS = new AtomicLong();
+
+    // Null until the native probe has been answered once; see nativeStatsAvailable().
+    private static volatile Boolean nativeStatsAvailable;
 
     private IreeEngineStats() {}
 
@@ -155,7 +159,6 @@ public final class IreeEngineStats {
         List<IreeModelStats> models = new ArrayList<>(LIVE.size());
         long staging = 0;
         long deviceLive = 0;
-        boolean statsAvailable = true;
 
         for (ModelRef ref : LIVE.values()) {
             IreeSymbolBlock block = ref.get();
@@ -187,15 +190,6 @@ public final class IreeEngineStats {
             if (stats.getDeviceBytesLive() > 0) {
                 deviceLive += stats.getDeviceBytesLive();
             }
-            // Flip the process-wide flag only when the native read EXPLICITLY reported
-            // statistics-compiled-out (status 0). The -1 byte gauges also cover native
-            // reads that did not happen (handle raced by close(), JNI null) — those
-            // must not clear the flag, because HAL statistics ARE compiled in; the read
-            // simply did not occur this tick.
-            if (stats.getDeviceBytesPeak() < 0
-                    && ref.counters.lastStatsStatus() == 0) {
-                statsAvailable = false;
-            }
         }
 
         return new IreeStatsSnapshot(
@@ -204,7 +198,7 @@ public final class IreeEngineStats {
                 safePlatform(),
                 safeString(LibUtils.loadedPath()),
                 STAGING_MODE,
-                statsAvailable,
+                nativeStatsAvailable(),
                 IreeJmx.status(),
                 IreeJmx.error(),
                 MODELS_LOADED.get(),
@@ -216,6 +210,40 @@ public final class IreeEngineStats {
                 CLOSED_WRAPPED_IMPORTS.get(),
                 CLOSED_STAGED_IMPORTS.get(),
                 Collections.unmodifiableList(models));
+    }
+
+    /**
+     * Whether IREE's HAL allocator statistics are compiled into the loaded runtime.
+     *
+     * <p>This is a <b>build</b> property, so it is read from a handle-free native probe rather
+     * than inferred from whichever models happen to be live. Inferring it was wrong in the
+     * direction that matters most: a process that has loaded nothing yet, or has closed
+     * everything, had no model to answer and so reported {@code true} unconditionally — including
+     * on a dist built with {@code -DIREE_STATISTICS_ENABLE=0}. That is exactly the moment an
+     * operator polls to check how the deployment is configured.
+     *
+     * <p>Cached after the first successful probe: the answer is fixed at compile time and cannot
+     * change within a process. Before the native library is loaded there is no one to ask, and a
+     * monitoring poll must not force a library load as a side effect, so the compiled default
+     * (statistics on, per the header and the CMake agreement check) stands in until the first
+     * model load makes the real answer reachable.
+     */
+    private static boolean nativeStatsAvailable() {
+        Boolean cached = nativeStatsAvailable;
+        if (cached != null) {
+            return cached;
+        }
+        if (LibUtils.loadedPath() == null) {
+            return true;
+        }
+        try {
+            boolean available = IreeNative.statisticsAvailable();
+            nativeStatsAvailable = available;
+            return available;
+        } catch (Throwable t) {
+            logger.debug("IREE statistics-availability probe failed; assuming available", t);
+            return true;
+        }
     }
 
     private static String safeString(String value) {

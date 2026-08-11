@@ -37,16 +37,6 @@ final class IreeModelCounters {
     private volatile long lastWrappedImports;
     private volatile long lastStagedImports;
 
-    // Status of the last native stats read: 1 = the read succeeded and the native side
-    // reported STAT_STATISTICS_AVAILABLE == 1; 0 = the read succeeded and statistics are
-    // compiled out; -1 = no successful read yet/this tick. Distinct from the -1
-    // byte-gauge convention: the gauges also read -1 when the native read did not happen
-    // at all (handle zero racing close(), JNI null), and the process-wide statsAvailable
-    // flag must flip only on an EXPLICIT compiled-out answer, never on an unreadable
-    // read. Written from the stats cold path under the block's statsLock (toStats() and
-    // close()), read from IreeEngineStats.snapshot().
-    private volatile int lastStatsStatus = -1;
-
     IreeModelCounters(
             String name,
             String driver,
@@ -130,14 +120,5 @@ final class IreeModelCounters {
 
     long lastStagedImports() {
         return lastStagedImports;
-    }
-
-    void recordNativeStatsStatus(int status) {
-        lastStatsStatus = status;
-    }
-
-    /** 1 = native statistics available, 0 = compiled out, -1 = no successful read yet. */
-    int lastStatsStatus() {
-        return lastStatsStatus;
     }
 }

@@ -156,5 +156,13 @@ class IreeRuntime {
 // AlignedLiveCount() in core/aligned_alloc.h.
 int64_t AliveRuntimeCount();
 
+// Whether IREE's HAL allocator statistics are compiled into this build, i.e.
+// whether RuntimeStats::deviceBytesPeak/deviceBytesLive carry meaning. This is
+// a build property fixed at compile time (see the IREE_STATISTICS_ENABLE
+// agreement check in native/CMakeLists.txt), so it is deliberately answerable
+// WITHOUT a runtime handle — a monitoring poll must be able to report it before
+// the first model loads and after the last one closes.
+bool StatisticsAvailable();
+
 }  // namespace measly::iree
 #endif  // MEASLY_IREE_RUNTIME_H

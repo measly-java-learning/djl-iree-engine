@@ -470,3 +470,11 @@ extern "C" JNIEXPORT jlong JNICALL
 Java_org_measly_iree_jni_IreeNative_aliveRuntimes(JNIEnv*, jclass) {
   return static_cast<jlong>(measly::iree::AliveRuntimeCount());
 }
+
+// Handle-free companion to STAT_STATISTICS_AVAILABLE. Deliberately takes no
+// handle: this is a build property, so the snapshot must be able to report it
+// with no model loaded.
+extern "C" JNIEXPORT jboolean JNICALL
+Java_org_measly_iree_jni_IreeNative_statisticsAvailable(JNIEnv*, jclass) {
+  return measly::iree::StatisticsAvailable() ? JNI_TRUE : JNI_FALSE;
+}
