@@ -163,27 +163,45 @@ target_link_libraries(iree_djl_core PUBLIC
     iree_io_parameter_index_provider
     iree_modules_io_parameters_parameters)
 
-include(FetchContent)
-FetchContent_Declare(Catch2
-    GIT_REPOSITORY https://github.com/catchorg/Catch2.git
-    GIT_TAG v3.15.3)
-FetchContent_MakeAvailable(Catch2)
+# Catch2 unit suites. Gated because the SHIPPING build (native/build.sh) was paying for them and
+# throwing the result away: FetchContent runs at CONFIGURE time regardless of what you later
+# build, and `cmake --build` with no --target builds `all`. Measured on the pre-gate tree, a build
+# that stages only libiree_djl.so compiled 107 Catch2 objects and two ~24 MB test binaries — 123
+# ninja edges where the .so itself needs 4 — on every arch, on every CI run.
+#
+# Default ON, so an unqualified `cmake -S native -B ...` and native/build_qa.sh are unchanged.
+# native/build.sh passes -DIREE_DJL_BUILD_TESTS=OFF before its "$@", so a caller can still turn it
+# back on (the last -D on a cmake command line wins).
+option(IREE_DJL_BUILD_TESTS "Build the Catch2 unit test suites" ON)
 
-add_executable(iree_runtime_test test/iree_runtime_test.cpp)
-target_link_libraries(iree_runtime_test PRIVATE iree_djl_core Catch2::Catch2WithMain)
-target_compile_definitions(iree_runtime_test PRIVATE
-    IREE_DJL_ADD_VMFB="${IREE_DJL_FIXTURE_DIR}/add.vmfb"
-    IREE_DIST_ADD_VMFB="${IREE_RUNTIME_DIST_ADD_VMFB}")
+if(IREE_DJL_BUILD_TESTS)
+  include(FetchContent)
+  # A hash-pinned tarball, not a git clone. Two reasons, and the first is the important one:
+  #   1. `GIT_TAG v3.15.3` is a MOVABLE ref with no integrity check, while the iree_runtime_dist
+  #      fetch ~120 lines above uses URL_HASH SHA256. Same file, two different trust levels.
+  #   2. 1.2 MB instead of a 46 MB clone — 35 MB of which is .git history nothing here reads.
+  # Bump both lines together; sha256sum the tarball rather than trusting a published checksum.
+  FetchContent_Declare(Catch2
+      URL      https://github.com/catchorg/Catch2/archive/refs/tags/v3.15.3.tar.gz
+      URL_HASH SHA256=b0299ae552918220a7a6e21e7de5b714777f4e8c883fb70c4bb23fe01df8c6e3)
+  FetchContent_MakeAvailable(Catch2)
 
-add_executable(iree_params_test test/iree_params_test.cpp)
-target_link_libraries(iree_params_test PRIVATE iree_djl_core Catch2::Catch2WithMain)
-target_compile_definitions(iree_params_test PRIVATE
-    IREE_DJL_SCALE_VMFB="${IREE_DJL_FIXTURE_DIR}/scale.vmfb"
-    IREE_DJL_SCALE_IRPA="${IREE_DJL_FIXTURE_DIR}/scale_weights.irpa"
-    IREE_DJL_SCALE_IRPA_ZERO="${IREE_DJL_FIXTURE_DIR}/scale_weights_zero.irpa"
-    IREE_DJL_SCALE2_VMFB="${IREE_DJL_FIXTURE_DIR}/scale2.vmfb"
-    IREE_DJL_SCALE2_BIAS_IRPA="${IREE_DJL_FIXTURE_DIR}/scale2_bias.irpa"
-    IREE_DJL_TEST_TMP_DIR="${CMAKE_CURRENT_BINARY_DIR}")
+  add_executable(iree_runtime_test test/iree_runtime_test.cpp)
+  target_link_libraries(iree_runtime_test PRIVATE iree_djl_core Catch2::Catch2WithMain)
+  target_compile_definitions(iree_runtime_test PRIVATE
+      IREE_DJL_ADD_VMFB="${IREE_DJL_FIXTURE_DIR}/add.vmfb"
+      IREE_DIST_ADD_VMFB="${IREE_RUNTIME_DIST_ADD_VMFB}")
+
+  add_executable(iree_params_test test/iree_params_test.cpp)
+  target_link_libraries(iree_params_test PRIVATE iree_djl_core Catch2::Catch2WithMain)
+  target_compile_definitions(iree_params_test PRIVATE
+      IREE_DJL_SCALE_VMFB="${IREE_DJL_FIXTURE_DIR}/scale.vmfb"
+      IREE_DJL_SCALE_IRPA="${IREE_DJL_FIXTURE_DIR}/scale_weights.irpa"
+      IREE_DJL_SCALE_IRPA_ZERO="${IREE_DJL_FIXTURE_DIR}/scale_weights_zero.irpa"
+      IREE_DJL_SCALE2_VMFB="${IREE_DJL_FIXTURE_DIR}/scale2.vmfb"
+      IREE_DJL_SCALE2_BIAS_IRPA="${IREE_DJL_FIXTURE_DIR}/scale2_bias.irpa"
+      IREE_DJL_TEST_TMP_DIR="${CMAKE_CURRENT_BINARY_DIR}")
+endif()
 
 # ASan/LSan leak harness — the go/no-go gate (Task 6)
 add_executable(iree_leak_harness harness/iree_leak_harness.cpp)

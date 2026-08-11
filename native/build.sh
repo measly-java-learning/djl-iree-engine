@@ -79,8 +79,24 @@ fi
 
 
 
+# -DIREE_DJL_BUILD_TESTS=OFF: this is the SHIPPING build, and it stages only the .so plus the
+# runtime's licence tree. Leaving the Catch2 suites in meant cloning and compiling Catch2 here as
+# well as in native/build_qa.sh — 107 objects and two ~24 MB binaries, discarded, on every arch of
+# every CI run. The Catch2 fetch happens at CONFIGURE time, so a --target on the build line alone
+# would not have avoided it.
+#
+# Placed BEFORE "$@" deliberately: the last -D on a cmake command line wins, so
+#   ./native/build.sh -DIREE_DJL_BUILD_TESTS=ON
+# still gets you native/build/iree_runtime_test for local iteration.
+#
+# The build line stays untargeted. `--target iree_djl` would be wrong here: under
+# -DIREE_DJL_SANITIZE=ON / -DIREE_DJL_TSAN=ON that target does not exist at all (see the JNI shim
+# guard in native/CMakeLists.txt), and both are documented local workflows. iree_leak_harness and
+# iree_copy_bench stay in `all` — they cost 2 edges each and the sanitizer recipes in README.md
+# run them straight out of this tree.
 cmake -S "${here}" -B "${build_dir}" -G Ninja \
   -DCMAKE_BUILD_TYPE="${build_type}" \
+  -DIREE_DJL_BUILD_TESTS=OFF \
   "$@"
 
 cmake --build "${build_dir}"
