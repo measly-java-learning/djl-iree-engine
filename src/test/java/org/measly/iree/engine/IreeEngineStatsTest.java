@@ -107,6 +107,44 @@ class IreeEngineStatsTest {
                 "a collected block must reach the rollup, not be stranded in LIVE");
     }
 
+    /**
+     * The never-throws contract, exercised at the only seam a test can reach. The real trigger is
+     * an {@code OutOfMemoryError} left pending by a failed {@code NewLongArray} inside
+     * {@code IreeNative.stats}, which cannot be provoked deterministically; a block whose
+     * {@code toStats()} throws stands in for it and drives the same backstop.
+     */
+    @Test
+    void snapshotSurvivesAModelThatFailsToReportAndOmitsOnlyThatModel() throws Exception {
+        long handle = -1L; // never a real pointer, so it cannot collide with a live model
+        IreeSymbolBlock hostile =
+                new IreeSymbolBlock(null, handle) {
+                    @Override
+                    IreeModelStats toStats() {
+                        throw new IllegalStateException("stats read exploded");
+                    }
+                };
+        IreeModelCounters counters =
+                new IreeModelCounters("hostile", "local-sync", "module.add", 0, 1L);
+        hostile.attachCounters(counters);
+        IreeEngineStats.register(handle, hostile, counters);
+        try (Model model = Model.newInstance("add", "IREE")) {
+            model.load(MODEL_DIR, "add", ADD_OPTIONS);
+            forwardOnce(model);
+
+            IreeStatsSnapshot snapshot = IreeEngineStats.snapshot();
+            assertEquals(
+                    1,
+                    snapshot.getModels().size(),
+                    "the failing model is dropped, the healthy one still reported");
+            assertEquals("add", snapshot.getModels().get(0).getName());
+        } finally {
+            IreeEngineStats.deregister(handle);
+            // Keep the block reachable to here: a collection mid-test would fold it through the
+            // reference queue instead, defeating the point.
+            assertNotNull(hostile);
+        }
+    }
+
     @Test
     void byteGaugesNeverSumUnavailableIntoTotals() throws Exception {
         try (Model model = Model.newInstance("add", "IREE")) {

@@ -11,6 +11,8 @@ import ai.djl.util.PairList;
 import java.nio.ByteBuffer;
 import org.measly.iree.jni.IreeNative;
 import org.measly.iree.jni.IreeTensor;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * Runs the model's entry point.
@@ -24,6 +26,8 @@ import org.measly.iree.jni.IreeTensor;
  * running everything on the calling thread.
  */
 public class IreeSymbolBlock extends AbstractSymbolBlock implements AutoCloseable {
+
+    private static final Logger logger = LoggerFactory.getLogger(IreeSymbolBlock.class);
 
     private final IreeNDManager manager;
     private volatile long handle;
@@ -133,11 +137,37 @@ public class IreeSymbolBlock extends AbstractSymbolBlock implements AutoCloseabl
     }
 
     /**
+     * The one place the observability path calls into JNI, and the only place that failure is
+     * absorbed. {@link IreeEngineStats#snapshot()} promises never to throw; the JNI entry point
+     * can still raise, most plausibly an {@code OutOfMemoryError} left pending by a failed
+     * {@code NewLongArray}, and an {@code UnsatisfiedLinkError} is possible if the library is
+     * only partially initialised.
+     *
+     * <p>Returning {@code null} degrades exactly as a closed handle does: every byte gauge reads
+     * {@code -1}, the documented "unavailable" encoding, and {@code lastStatsStatus} is left
+     * untouched so an unreadable poll never flips the process-wide {@code nativeStatsAvailable}
+     * flag. Logged at debug rather than warn because a poll loop would otherwise flood the log
+     * at its own polling rate.
+     *
+     * <p>Callers must already hold {@code statsLock}.
+     */
+    private static long[] readStats(long h) {
+        try {
+            return IreeNative.stats(h);
+        } catch (Throwable t) {
+            logger.debug("IREE native stats read failed; reporting gauges as unavailable", t);
+            return null;
+        }
+    }
+
+    /**
      * Reads this model's statistics. Returns {@code null} if no counters are attached.
      *
      * <p>Holds {@code statsLock} across the handle read and the JNI call so a concurrent
      * {@code close()} cannot free the runtime between them — that interleaving is a
      * use-after-free, and it is exactly what a monitoring poll racing a model shutdown does.
+     *
+     * <p>Never throws on account of the native read; see {@link #readStats(long)}.
      */
     IreeModelStats toStats() {
         IreeModelCounters c = counters;
@@ -151,7 +181,7 @@ public class IreeSymbolBlock extends AbstractSymbolBlock implements AutoCloseabl
         long deviceLive = -1;
         synchronized (statsLock) {
             if (handle != 0L) {
-                long[] raw = IreeNative.stats(handle);
+                long[] raw = readStats(handle);
                 if (raw != null && raw.length == IreeNative.STAT_LENGTH) {
                     wrapped = raw[IreeNative.STAT_WRAPPED_IMPORTS];
                     staged = raw[IreeNative.STAT_STAGED_IMPORTS];
@@ -199,7 +229,11 @@ public class IreeSymbolBlock extends AbstractSymbolBlock implements AutoCloseabl
                 // native side dies with the runtime.
                 IreeModelCounters c = counters;
                 if (c != null) {
-                    long[] raw = IreeNative.stats(handle);
+                    // Guarded for a different reason than toStats(): an observability read must
+                    // never be the thing that stops close() from freeing the native runtime.
+                    // Losing this model's final import totals from the rollup is a far cheaper
+                    // failure than leaking its IREE session.
+                    long[] raw = readStats(handle);
                     if (raw != null && raw.length == IreeNative.STAT_LENGTH) {
                         c.recordNativeImports(
                                 raw[IreeNative.STAT_WRAPPED_IMPORTS],

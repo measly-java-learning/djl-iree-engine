@@ -142,7 +142,13 @@ public final class IreeEngineStats {
     /**
      * Captures the engine's current state.
      *
-     * @return an immutable snapshot; never {@code null}, never throws
+     * <p><b>Never throws</b>, and that is enforced rather than merely intended: the native read
+     * is absorbed in {@link IreeSymbolBlock#toStats()} (degrading to the {@code -1} gauges), a
+     * model that fails unforeseeably is dropped from the list rather than failing the poll, and
+     * {@link #safePlatform()} covers an unsupported {@code os.arch}. A monitoring poll must not
+     * be the thing that breaks production.
+     *
+     * @return an immutable snapshot; never {@code null}
      */
     public static IreeStatsSnapshot snapshot() {
         purgeCollected();
@@ -156,7 +162,17 @@ public final class IreeEngineStats {
             if (block == null) {
                 continue; // collected between the purge above and here; the next poll folds it in
             }
-            IreeModelStats stats = block.toStats();
+            IreeModelStats stats;
+            try {
+                stats = block.toStats();
+            } catch (Throwable t) {
+                // Backstop for the never-throws contract. toStats() already absorbs failure of
+                // the native read, so reaching here means something unforeseen; drop the one
+                // model rather than the whole poll. Debug, not warn: a poll loop logs at its own
+                // rate, and the operator's signal is the model's absence from getModels().
+                logger.debug("IREE stats read failed for one model; omitting it from the snapshot", t);
+                continue;
+            }
             if (stats == null) {
                 // Defensive only, and not reachable through IreeModel.load: attachCounters()
                 // always precedes register(). Kept so a block registered by some future path
