@@ -99,11 +99,19 @@ Java_org_measly_iree_jni_IreeNative_load(JNIEnv* env, jclass,
                                          jbyteArray vmfb, jstring entryPoint,
                                          jstring device, jobjectArray paramScopes,
                                          jobjectArray paramPaths) {
+  if (vmfb == nullptr) {
+    ThrowJava(env, "vmfb was null");
+    return 0;
+  }
   const jsize length = env->GetArrayLength(vmfb);
   std::vector<std::byte> bytes(static_cast<size_t>(length));
   env->GetByteArrayRegion(vmfb, 0, length,
                           reinterpret_cast<jbyte*>(bytes.data()));
 
+  if (entryPoint == nullptr) {
+    ThrowJava(env, "entryPoint was null");
+    return 0;
+  }
   const char* entry = env->GetStringUTFChars(entryPoint, nullptr);
   if (entry == nullptr) {
     ThrowJava(env, "entryPoint was null");
@@ -112,6 +120,10 @@ Java_org_measly_iree_jni_IreeNative_load(JNIEnv* env, jclass,
   std::string entry_copy(entry);
   env->ReleaseStringUTFChars(entryPoint, entry);
 
+  if (device == nullptr) {
+    ThrowJava(env, "device was null");
+    return 0;
+  }
   const char* drv = env->GetStringUTFChars(device, nullptr);
   if (drv == nullptr) {
     ThrowJava(env, "device was null");
@@ -120,7 +132,10 @@ Java_org_measly_iree_jni_IreeNative_load(JNIEnv* env, jclass,
   std::string driver_copy(drv);
   env->ReleaseStringUTFChars(device, drv);
 
-  // GetArrayLength on a null array is 0, so null arrays zip to an empty span.
+  if (paramScopes == nullptr || paramPaths == nullptr) {
+    ThrowJava(env, "paramScopes and paramPaths must not be null");
+    return 0;
+  }
   if (env->GetArrayLength(paramScopes) != env->GetArrayLength(paramPaths)) {
     ThrowJava(env, "paramScopes and paramPaths must have the same length");
     return 0;
@@ -183,6 +198,10 @@ Java_org_measly_iree_jni_IreeNative_invoke(JNIEnv* env, jclass, jlong handle,
     return nullptr;
   }
 
+  if (inputBuffers == nullptr || inputShapes == nullptr || inputTypes == nullptr) {
+    ThrowJava(env, "inputs, shapes, and elementTypes must not be null");
+    return nullptr;
+  }
   const jsize count = env->GetArrayLength(inputBuffers);
   // The marshalling below indexes shapes[i]/types[i] for i in [0, count).
   // A caller that passes shorter arrays would otherwise be out-of-bounds
@@ -205,9 +224,11 @@ Java_org_measly_iree_jni_IreeNative_invoke(JNIEnv* env, jclass, jlong handle,
 
   for (jsize i = 0; i < count; ++i) {
     jobject buffer = env->GetObjectArrayElement(inputBuffers, i);
-    void* address = env->GetDirectBufferAddress(buffer);
-    const jlong capacity = env->GetDirectBufferCapacity(buffer);
-    if (address == nullptr || capacity < 0) {
+    // GetDirectBufferAddress(nullptr) is undefined; fold the null element
+    // into the existing non-direct-buffer rejection.
+    void* address = buffer == nullptr ? nullptr : env->GetDirectBufferAddress(buffer);
+    const jlong capacity = buffer == nullptr ? 0 : env->GetDirectBufferCapacity(buffer);
+    if (buffer == nullptr || address == nullptr || capacity < 0) {
       env->ReleaseIntArrayElements(inputTypes, types, JNI_ABORT);
       ThrowJava(env, "input must be a direct ByteBuffer");
       return nullptr;
@@ -215,6 +236,11 @@ Java_org_measly_iree_jni_IreeNative_invoke(JNIEnv* env, jclass, jlong handle,
 
     jlongArray shapeArray =
         static_cast<jlongArray>(env->GetObjectArrayElement(inputShapes, i));
+    if (shapeArray == nullptr) {
+      env->ReleaseIntArrayElements(inputTypes, types, JNI_ABORT);
+      ThrowJava(env, "input shape is null");
+      return nullptr;
+    }
     const jsize rank = env->GetArrayLength(shapeArray);
     shapes[i].resize(static_cast<size_t>(rank));
     env->GetLongArrayRegion(shapeArray, 0, rank,
