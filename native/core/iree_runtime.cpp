@@ -32,6 +32,12 @@ struct RuntimeState {
   SessionPtr session;
   std::vector<IreeRuntime::ImportOutcome> lastImportOutcomes;
 
+  // Cumulative import outcomes, for the observability snapshot. Incremented in
+  // RunCall, which is the single input-preparation path for both Invoke and
+  // InvokeViews. Single-writer by the caller contract (one model per thread).
+  uint64_t wrappedImports = 0;
+  uint64_t stagedImports = 0;
+
   // Staged-input fallback policy. The cached modes retain one grow-only
   // staging buffer PER INPUT SLOT for the runtime's lifetime — see
   // ImportOrCopy. Lock-free by contract: Invoke/InvokeViews are single-flight
@@ -209,6 +215,40 @@ std::span<const IreeRuntime::ImportOutcome> IreeRuntime::lastImportOutcomes() co
   return state_->lastImportOutcomes;
 }
 
+RuntimeStats IreeRuntime::Stats() const {
+  RuntimeStats out{};
+  out.wrappedImports = state_->wrappedImports;
+  out.stagedImports = state_->stagedImports;
+
+  uint64_t staging = 0;
+  for (iree_device_size_t size : state_->cachedStagingSizes) {
+    staging += static_cast<uint64_t>(size);
+  }
+  out.stagingBytes = staging;
+
+#if IREE_STATISTICS_ENABLE
+  out.statisticsAvailable = true;
+  iree_hal_allocator_statistics_t stats;
+  memset(&stats, 0, sizeof(stats));
+  iree_hal_allocator_query_statistics(
+      iree_hal_device_allocator(state_->device.get()), &stats);
+  out.deviceBytesPeak = static_cast<uint64_t>(stats.device_bytes_peak);
+  // freed can never exceed allocated, but clamp rather than underflow a
+  // uint64_t if a future allocator implementation disagrees.
+  out.deviceBytesLive =
+      stats.device_bytes_allocated >= stats.device_bytes_freed
+          ? static_cast<uint64_t>(stats.device_bytes_allocated -
+                                  stats.device_bytes_freed)
+          : 0;
+#else
+  out.statisticsAvailable = false;
+  out.deviceBytesPeak = 0;
+  out.deviceBytesLive = 0;
+#endif
+
+  return out;
+}
+
 namespace {
 
 // Attempts a zero-copy import of host memory; falls back to a staged copy when
@@ -338,6 +378,12 @@ std::vector<BufferViewPtr> RunCall(RuntimeState& state,
   for (size_t i = 0; i < inputs.size(); ++i) {
     auto view = ImportOrCopy(state.device.get(), allocator, inputs[i], i, state,
                              &state.lastImportOutcomes[i]);
+    // Count the outcome ImportOrCopy just recorded rather than re-deriving it.
+    if (state.lastImportOutcomes[i] == IreeRuntime::ImportOutcome::kWrapped) {
+      ++state.wrappedImports;
+    } else {
+      ++state.stagedImports;
+    }
     IREE_CHECK_OR_THROW(iree_runtime_call_inputs_push_back_buffer_view(
         call.get(), view.get()));
     input_views.push_back(std::move(view));

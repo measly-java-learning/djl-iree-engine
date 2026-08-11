@@ -475,3 +475,147 @@ TEST_CASE("unknown driver fails cleanly at load", "[runtime][driver]") {
   REQUIRE_THROWS_AS(IreeRuntime::Load(bytes, kEntryPoint, "no-such-driver"),
                     std::runtime_error);
 }
+
+TEST_CASE("Stats counts a wrapped import for an aligned host buffer") {
+  auto vmfb = ReadFile(kAddVmfb);
+  auto runtime = IreeRuntime::Load(vmfb, kEntryPoint, "local-sync");
+
+  // AlignedAlloc gives the 64-byte alignment IREE requires to import zero-copy.
+  auto* lhs = static_cast<float*>(measly::iree::AlignedAlloc(4 * sizeof(float)));
+  auto* rhs = static_cast<float*>(measly::iree::AlignedAlloc(4 * sizeof(float)));
+  for (int i = 0; i < 4; ++i) {
+    lhs[i] = static_cast<float>(i + 1);
+    rhs[i] = static_cast<float>((i + 1) * 10);
+  }
+  std::vector<measly::iree::InputDesc> inputs = {
+      {lhs, 4 * sizeof(float), {4}, kF32},
+      {rhs, 4 * sizeof(float), {4}, kF32},
+  };
+
+  auto before = runtime->Stats();
+  REQUIRE(before.wrappedImports == 0);
+  REQUIRE(before.stagedImports == 0);
+
+  (void)runtime->Invoke(inputs);
+
+  auto after = runtime->Stats();
+  REQUIRE(after.wrappedImports == 2);
+  REQUIRE(after.stagedImports == 0);
+
+  measly::iree::AlignedFree(lhs);
+  measly::iree::AlignedFree(rhs);
+}
+
+TEST_CASE("Stats counts a staged import for a misaligned host buffer") {
+  auto vmfb = ReadFile(kAddVmfb);
+  auto runtime = IreeRuntime::Load(vmfb, kEntryPoint, "local-sync");
+
+  // Deliberately offset past the 64-byte boundary so the import precondition fails
+  // and ImportOrCopy takes the staging fallback.
+  auto* block = static_cast<std::byte*>(measly::iree::AlignedAlloc(256));
+  auto* lhs = reinterpret_cast<float*>(block + 4);
+  auto* rhs = reinterpret_cast<float*>(block + 128 + 4);
+  for (int i = 0; i < 4; ++i) {
+    lhs[i] = 1.0f;
+    rhs[i] = 2.0f;
+  }
+  std::vector<measly::iree::InputDesc> inputs = {
+      {lhs, 4 * sizeof(float), {4}, kF32},
+      {rhs, 4 * sizeof(float), {4}, kF32},
+  };
+
+  (void)runtime->Invoke(inputs);
+
+  auto after = runtime->Stats();
+  REQUIRE(after.stagedImports == 2);
+  REQUIRE(after.wrappedImports == 0);
+
+  measly::iree::AlignedFree(block);
+}
+
+TEST_CASE("Stats counters accumulate identically through Invoke and InvokeViews") {
+  auto vmfb = ReadFile(kAddVmfb);
+  auto runtime = IreeRuntime::Load(vmfb, kEntryPoint, "local-sync");
+
+  auto* lhs = static_cast<float*>(measly::iree::AlignedAlloc(4 * sizeof(float)));
+  auto* rhs = static_cast<float*>(measly::iree::AlignedAlloc(4 * sizeof(float)));
+  for (int i = 0; i < 4; ++i) {
+    lhs[i] = 1.0f;
+    rhs[i] = 2.0f;
+  }
+  std::vector<measly::iree::InputDesc> inputs = {
+      {lhs, 4 * sizeof(float), {4}, kF32},
+      {rhs, 4 * sizeof(float), {4}, kF32},
+  };
+
+  (void)runtime->Invoke(inputs);
+  REQUIRE(runtime->Stats().wrappedImports == 2);
+
+  (void)runtime->InvokeViews(inputs);
+  runtime->ReleaseOutputs();
+  REQUIRE(runtime->Stats().wrappedImports == 4);
+
+  measly::iree::AlignedFree(lhs);
+  measly::iree::AlignedFree(rhs);
+}
+
+TEST_CASE("Stats reports staging bytes that grow then plateau under cached staging") {
+  auto vmfb = ReadFile(kAddVmfb);
+  // The 5-argument overload is required: kAllocatePerCall retains no cached
+  // staging buffers, so stagingBytes would be structurally zero.
+  auto runtime = IreeRuntime::Load(vmfb, kEntryPoint, "local-sync",
+                                   std::span<const measly::iree::ParameterScope>{},
+                                   IreeRuntime::StagingMode::kCachedMapWrite);
+
+  auto* block = static_cast<std::byte*>(measly::iree::AlignedAlloc(256));
+  auto* lhs = reinterpret_cast<float*>(block + 4);
+  auto* rhs = reinterpret_cast<float*>(block + 128 + 4);
+  for (int i = 0; i < 4; ++i) {
+    lhs[i] = 1.0f;
+    rhs[i] = 2.0f;
+  }
+  std::vector<measly::iree::InputDesc> inputs = {
+      {lhs, 4 * sizeof(float), {4}, kF32},
+      {rhs, 4 * sizeof(float), {4}, kF32},
+  };
+
+  REQUIRE(runtime->Stats().stagingBytes == 0);
+  (void)runtime->Invoke(inputs);
+  const uint64_t afterFirst = runtime->Stats().stagingBytes;
+  REQUIRE(afterFirst > 0);
+
+  for (int i = 0; i < 20; ++i) {
+    (void)runtime->Invoke(inputs);
+  }
+  // Grow-only per-slot buffers: same input sizes must not grow the footprint.
+  REQUIRE(runtime->Stats().stagingBytes == afterFirst);
+
+  measly::iree::AlignedFree(block);
+}
+
+TEST_CASE("Stats reports device bytes returning to baseline after ReleaseOutputs") {
+  auto vmfb = ReadFile(kAddVmfb);
+  auto runtime = IreeRuntime::Load(vmfb, kEntryPoint, "local-sync");
+  REQUIRE(runtime->Stats().statisticsAvailable);
+
+  auto* lhs = static_cast<float*>(measly::iree::AlignedAlloc(4 * sizeof(float)));
+  auto* rhs = static_cast<float*>(measly::iree::AlignedAlloc(4 * sizeof(float)));
+  for (int i = 0; i < 4; ++i) {
+    lhs[i] = 1.0f;
+    rhs[i] = 2.0f;
+  }
+  std::vector<measly::iree::InputDesc> inputs = {
+      {lhs, 4 * sizeof(float), {4}, kF32},
+      {rhs, 4 * sizeof(float), {4}, kF32},
+  };
+
+  const uint64_t baseline = runtime->Stats().deviceBytesLive;
+  (void)runtime->InvokeViews(inputs);
+  REQUIRE(runtime->Stats().deviceBytesLive > baseline);
+  runtime->ReleaseOutputs();
+  REQUIRE(runtime->Stats().deviceBytesLive == baseline);
+  REQUIRE(runtime->Stats().deviceBytesPeak > 0);
+
+  measly::iree::AlignedFree(lhs);
+  measly::iree::AlignedFree(rhs);
+}

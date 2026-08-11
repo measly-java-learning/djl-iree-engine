@@ -38,6 +38,25 @@ struct OutputLayout {
   uint64_t nbytes;
 };
 
+// Cold-path observability read. Never called from Invoke/InvokeViews.
+//
+// stagingBytes is OURS and exact: the sum of the grow-only per-slot staging
+// buffers the cached staging modes retain. It is structurally 0 under
+// kAllocatePerCall, which retains none.
+//
+// deviceBytes* come from IREE's HAL allocator statistics. Each runtime owns its
+// own device, so these are already scoped to exactly one model. When
+// statisticsAvailable is false the two device figures are 0 and meaningless —
+// the caller is responsible for reporting them as "unavailable".
+struct RuntimeStats {
+  uint64_t wrappedImports;
+  uint64_t stagedImports;
+  uint64_t stagingBytes;
+  uint64_t deviceBytesPeak;
+  uint64_t deviceBytesLive;
+  bool statisticsAvailable;
+};
+
 struct RuntimeState;  // pimpl
 
 // One parameter archive bound to a scope name. `scope` is the name the compiled
@@ -116,6 +135,11 @@ class IreeRuntime {
   // Empirical answer to "did the import zero-copy or silently stage?".
   // Deliberately part of the API, not a log line, so tests can assert it.
   std::span<const ImportOutcome> lastImportOutcomes() const;
+
+  // Cumulative, monotonic, per-runtime. Unlike lastImportOutcomes() these have
+  // no validity window: they are safe to read at any time between construction
+  // and destruction.
+  RuntimeStats Stats() const;
 
   explicit IreeRuntime(std::unique_ptr<RuntimeState> state);
 
