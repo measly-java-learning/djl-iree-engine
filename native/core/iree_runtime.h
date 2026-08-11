@@ -147,5 +147,11 @@ class IreeRuntime {
   std::unique_ptr<RuntimeState> state_;
 };
 
+// Live IreeRuntime instances. A leak probe for the JVM-side stress tests and
+// the native harness: unlike LSan, which sees only unreachable memory, this
+// counter catches a runtime that is retained forever. Mirrors
+// AlignedLiveCount() in core/aligned_alloc.h.
+int64_t AliveRuntimeCount();
+
 }  // namespace measly::iree
 #endif  // MEASLY_IREE_RUNTIME_H

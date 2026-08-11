@@ -8,6 +8,7 @@
 #include <fstream>
 #include <new>
 #include <span>
+#include <stdexcept>
 #include <vector>
 #include "array_size_limits.h"
 #include "core/aligned_alloc.h"
@@ -618,4 +619,27 @@ TEST_CASE("Stats reports device bytes returning to baseline after ReleaseOutputs
 
   measly::iree::AlignedFree(lhs);
   measly::iree::AlignedFree(rhs);
+}
+
+TEST_CASE("AliveRuntimeCount tracks runtime construction and destruction") {
+  const int64_t baseline = measly::iree::AliveRuntimeCount();
+  auto vmfb = ReadFile(kAddVmfb);
+  {
+    auto runtime = IreeRuntime::Load(vmfb, kEntryPoint, "local-sync");
+    REQUIRE(measly::iree::AliveRuntimeCount() == baseline + 1);
+    {
+      auto second = IreeRuntime::Load(vmfb, kEntryPoint, "local-sync");
+      REQUIRE(measly::iree::AliveRuntimeCount() == baseline + 2);
+    }
+    REQUIRE(measly::iree::AliveRuntimeCount() == baseline + 1);
+  }
+  REQUIRE(measly::iree::AliveRuntimeCount() == baseline);
+}
+
+TEST_CASE("AliveRuntimeCount does not count a failed load") {
+  const int64_t baseline = measly::iree::AliveRuntimeCount();
+  auto vmfb = ReadFile(kAddVmfb);
+  REQUIRE_THROWS_AS(IreeRuntime::Load(vmfb, kEntryPoint, "no-such-driver"),
+                    std::runtime_error);
+  REQUIRE(measly::iree::AliveRuntimeCount() == baseline);
 }

@@ -1,5 +1,6 @@
 #include "core/iree_runtime.h"
 
+#include <atomic>
 #include <cstring>
 #include "core/iree_handles.h"
 #include "core/iree_status.h"
@@ -12,6 +13,14 @@
 #include "iree/runtime/api.h"
 
 namespace measly::iree {
+
+namespace {
+std::atomic<int64_t> g_runtimes_live{0};
+}  // namespace
+
+int64_t AliveRuntimeCount() {
+  return g_runtimes_live.load(std::memory_order_relaxed);
+}
 
 struct RuntimeState {
   // Owns a copy of the flatbuffer. append_bytecode_module_from_memory with a
@@ -53,8 +62,13 @@ struct RuntimeState {
 };
 
 IreeRuntime::IreeRuntime(std::unique_ptr<RuntimeState> state)
-    : state_(std::move(state)) {}
-IreeRuntime::~IreeRuntime() = default;
+    : state_(std::move(state)) {
+  // Incremented here rather than in Load() so a construction that never
+  // happens — a throwing Load — is never counted.
+  ++g_runtimes_live;
+}
+
+IreeRuntime::~IreeRuntime() { --g_runtimes_live; }
 
 std::unique_ptr<IreeRuntime> IreeRuntime::Load(std::span<const std::byte> vmfb,
                                                std::string_view entryPoint,
