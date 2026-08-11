@@ -28,9 +28,24 @@ public class IreeSymbolBlock extends AbstractSymbolBlock implements AutoCloseabl
     private final IreeNDManager manager;
     private volatile long handle;
 
+    // Serializes the stats cold path against close(): the stats read takes the native
+    // handle and calls into JNI, close() destroys the handle, and a destroy between the
+    // read and the JNI call would be a use-after-free. Taken only by close() and
+    // toStats(), never by forwardInternal — the hot path stays lock-free.
+    private final Object statsLock = new Object();
+
+    // Attached by IreeModel.load right after construction. Null only in the narrow
+    // window before that, and in tests that build a block directly.
+    private volatile IreeModelCounters counters;
+
     IreeSymbolBlock(IreeNDManager manager, long handle) {
         this.manager = manager;
         this.handle = handle;
+    }
+
+    /** Attaches the counters this block updates. Called once, from {@link IreeModel#load}. */
+    void attachCounters(IreeModelCounters counters) {
+        this.counters = counters;
     }
 
     @Override
@@ -62,7 +77,13 @@ public class IreeSymbolBlock extends AbstractSymbolBlock implements AutoCloseabl
             types[i] = IreeDataTypes.toIree(input.getDataType());
         }
 
+        final long start = System.nanoTime();
         IreeTensor[] outputs = IreeNative.invoke(handle, buffers, shapes, types);
+        final long elapsed = System.nanoTime() - start;
+        IreeModelCounters c = counters;
+        if (c != null) {
+            c.recordForward(elapsed);
+        }
 
         NDManager rm = inputs.isEmpty() ? manager : inputs.head().getManager();
         IreeNDManager target = (rm instanceof IreeNDManager) ? (IreeNDManager) rm : manager;
@@ -95,9 +116,13 @@ public class IreeSymbolBlock extends AbstractSymbolBlock implements AutoCloseabl
 
     @Override
     public void close() {
-        if (handle != 0L) {
-            IreeNative.close(handle);
-            handle = 0L;
+        // Mutual exclusion with toStats(): a concurrent snapshot poll must never observe
+        // the handle between IreeNative.close() freeing it and the handle read.
+        synchronized (statsLock) {
+            if (handle != 0L) {
+                IreeNative.close(handle);
+                handle = 0L;
+            }
         }
     }
 }
