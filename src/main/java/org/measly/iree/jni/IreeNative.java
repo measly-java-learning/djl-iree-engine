@@ -71,8 +71,65 @@ public final class IreeNative {
      * Per-input import outcome from the last invoke: 1 = zero-copy wrap,
      * 0 = staged copy. Exposed so tests can assert what actually happened
      * rather than assuming a borrow.
+     *
+     * <p>Production callers should use {@link org.measly.iree.engine.IreeEngineStats#snapshot()}'s
+     * cumulative {@code wrappedImports}/{@code stagedImports} instead — this per-call query is
+     * last-call-only state.
      */
     public static native int[] lastImportOutcomes(long handle);
+
+    /** Index of the cumulative zero-copy import count in {@link #stats(long)}. */
+    public static final int STAT_WRAPPED_IMPORTS = 0;
+    /** Index of the cumulative staged-copy import count in {@link #stats(long)}. */
+    public static final int STAT_STAGED_IMPORTS = 1;
+    /** Index of the cached staging footprint, in bytes, in {@link #stats(long)}. */
+    public static final int STAT_STAGING_BYTES = 2;
+    /** Index of the HAL allocator's peak device bytes in {@link #stats(long)}. */
+    public static final int STAT_DEVICE_BYTES_PEAK = 3;
+    /** Index of the HAL allocator's live device bytes in {@link #stats(long)}. */
+    public static final int STAT_DEVICE_BYTES_LIVE = 4;
+    /** Index of the statistics-compiled-in flag (1 or 0) in {@link #stats(long)}. */
+    public static final int STAT_STATISTICS_AVAILABLE = 5;
+    /** Length of the array {@link #stats(long)} returns. */
+    public static final int STAT_LENGTH = 6;
+
+    /**
+     * Cold-path observability read for one runtime, as a fixed-layout array
+     * indexed by the {@code STAT_*} constants above.
+     *
+     * <p>Returns a primitive array rather than an object deliberately: building
+     * a Java object in JNI needs a cached constructor ID with a hardcoded
+     * signature literal, which breaks at class init whenever the Java
+     * constructor changes. The array is unpacked in Java, where the compiler
+     * checks it.
+     *
+     * <p><b>Returns {@code null} for a closed or zero handle rather than
+     * throwing</b>, because the caller is a monitoring poll that must never
+     * throw. Callers skip a null entry.
+     *
+     * <p>When {@code STAT_STATISTICS_AVAILABLE} is 0, the two device-byte
+     * entries are meaningless and callers must report them as unavailable.
+     */
+    public static native long[] stats(long handle);
+
+    /**
+     * Live native runtimes. A leak probe for tests: unlike LSan, which sees
+     * only unreachable memory, this counts a runtime that is retained forever.
+     */
+    public static native long aliveRuntimes();
+
+    /**
+     * Whether IREE's HAL allocator statistics are compiled into this build —
+     * that is, whether {@link #STAT_DEVICE_BYTES_PEAK} and
+     * {@link #STAT_DEVICE_BYTES_LIVE} carry meaning.
+     *
+     * <p>Takes no handle on purpose. This is a build property fixed at compile
+     * time (see the {@code IREE_STATISTICS_ENABLE} agreement check in
+     * {@code native/CMakeLists.txt}), so a monitoring poll must be able to
+     * report it before the first model loads and after the last one closes —
+     * neither of which a per-handle read can do.
+     */
+    public static native boolean statisticsAvailable();
 
     /** Forces the class to initialise, loading the library. */
     public static void ensureLoaded() {

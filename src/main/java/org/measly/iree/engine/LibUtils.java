@@ -22,6 +22,7 @@ public final class LibUtils {
 
     private static final int BUF = 64 * 1024;
     private static boolean loaded;
+    private static String loadedPath;
 
     private LibUtils() {}
 
@@ -34,7 +35,9 @@ public final class LibUtils {
         }
         String override = System.getenv("IREE_LIBRARY_PATH");
         if (override != null && !override.isEmpty()) {
-            System.load(Path.of(override).toAbsolutePath().toString());
+            String path = Path.of(override).toAbsolutePath().toString();
+            System.load(path);
+            loadedPath = path;
             loaded = true;
             return;
         }
@@ -49,11 +52,22 @@ public final class LibUtils {
             if (!Files.isRegularFile(target)) {
                 extract(resource, target);
             }
-            System.load(target.toAbsolutePath().toString());
+            String path = target.toAbsolutePath().toString();
+            System.load(path);
+            loadedPath = path;
             loaded = true;
         } catch (IOException e) {
             throw new IllegalStateException("Failed to extract native library " + resource, e);
         }
+    }
+
+    /**
+     * The absolute path last passed to {@code System.load}, or {@code null} before any load.
+     * Reported by the observability snapshot so an operator can tell which library a process
+     * actually loaded — the {@code IREE_LIBRARY_PATH} override makes that non-obvious.
+     */
+    static String loadedPath() {
+        return loadedPath;
     }
 
     /**

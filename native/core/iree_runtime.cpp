@@ -1,5 +1,6 @@
 #include "core/iree_runtime.h"
 
+#include <atomic>
 #include <cstring>
 #include "core/iree_handles.h"
 #include "core/iree_status.h"
@@ -12,6 +13,22 @@
 #include "iree/runtime/api.h"
 
 namespace measly::iree {
+
+namespace {
+std::atomic<int64_t> g_runtimes_live{0};
+}  // namespace
+
+int64_t AliveRuntimeCount() {
+  return g_runtimes_live.load(std::memory_order_relaxed);
+}
+
+bool StatisticsAvailable() {
+#if IREE_STATISTICS_ENABLE
+  return true;
+#else
+  return false;
+#endif
+}
 
 struct RuntimeState {
   // Owns a copy of the flatbuffer. append_bytecode_module_from_memory with a
@@ -32,6 +49,16 @@ struct RuntimeState {
   SessionPtr session;
   std::vector<IreeRuntime::ImportOutcome> lastImportOutcomes;
 
+  // Cumulative import outcomes, for the observability snapshot. Incremented in
+  // RunCall, which is the single input-preparation path for both Invoke and
+  // InvokeViews. Atomic with relaxed ordering: RunCall writes them from the
+  // model's thread while Stats() may read them from a monitoring poll, and a
+  // bare uint64_t would be a data race. Relaxed is sufficient — each counter is
+  // a standalone cumulative count with no ordering constraints against the read
+  // side (the reader needs no happens-before edge to a specific call).
+  std::atomic<uint64_t> wrappedImports{0};
+  std::atomic<uint64_t> stagedImports{0};
+
   // Staged-input fallback policy. The cached modes retain one grow-only
   // staging buffer PER INPUT SLOT for the runtime's lifetime — see
   // ImportOrCopy. Lock-free by contract: Invoke/InvokeViews are single-flight
@@ -40,6 +67,16 @@ struct RuntimeState {
   std::vector<BufferPtr> cachedStaging;
   std::vector<iree_device_size_t> cachedStagingSizes;
 
+  // Running sum of cachedStagingSizes, maintained alongside it in ImportOrCopy.
+  // Stats() reads THIS rather than iterating the vector, which would be a data
+  // race: the vector reallocates on resize() and its elements are written on
+  // every slot regrowth, both from the model's thread, while a monitoring poll
+  // reads from another. Iterating it was undefined behavior, not an approximate
+  // read. One relaxed fetch_add on the rare growth path costs less than the
+  // loop it replaces, so the hot path is not merely unharmed but shorter, and
+  // stagingBytes is now exact rather than exact-while-quiescent.
+  std::atomic<uint64_t> stagingBytesTotal{0};
+
   // Output views retained by InvokeViews() until ReleaseOutputs(). Invoke()
   // and InvokeViews() both clear this first (stale-batch guard), so a caller
   // that forgets ReleaseOutputs leaks nothing and double-release is impossible.
@@ -47,8 +84,13 @@ struct RuntimeState {
 };
 
 IreeRuntime::IreeRuntime(std::unique_ptr<RuntimeState> state)
-    : state_(std::move(state)) {}
-IreeRuntime::~IreeRuntime() = default;
+    : state_(std::move(state)) {
+  // Incremented here rather than in Load() so a construction that never
+  // happens — a throwing Load — is never counted.
+  ++g_runtimes_live;
+}
+
+IreeRuntime::~IreeRuntime() { --g_runtimes_live; }
 
 std::unique_ptr<IreeRuntime> IreeRuntime::Load(std::span<const std::byte> vmfb,
                                                std::string_view entryPoint,
@@ -209,6 +251,38 @@ std::span<const IreeRuntime::ImportOutcome> IreeRuntime::lastImportOutcomes() co
   return state_->lastImportOutcomes;
 }
 
+RuntimeStats IreeRuntime::Stats() const {
+  RuntimeStats out{};
+  out.wrappedImports = state_->wrappedImports.load(std::memory_order_relaxed);
+  out.stagedImports = state_->stagedImports.load(std::memory_order_relaxed);
+
+  // Lock-free and exact: one relaxed load of the running sum ImportOrCopy
+  // maintains. Reading state_->cachedStagingSizes directly would race the
+  // model's thread — see RuntimeState::stagingBytesTotal.
+  out.stagingBytes = state_->stagingBytesTotal.load(std::memory_order_relaxed);
+
+  out.statisticsAvailable = StatisticsAvailable();
+#if IREE_STATISTICS_ENABLE
+  iree_hal_allocator_statistics_t stats;
+  memset(&stats, 0, sizeof(stats));
+  iree_hal_allocator_query_statistics(
+      iree_hal_device_allocator(state_->device.get()), &stats);
+  out.deviceBytesPeak = static_cast<uint64_t>(stats.device_bytes_peak);
+  // freed can never exceed allocated, but clamp rather than underflow a
+  // uint64_t if a future allocator implementation disagrees.
+  out.deviceBytesLive =
+      stats.device_bytes_allocated >= stats.device_bytes_freed
+          ? static_cast<uint64_t>(stats.device_bytes_allocated -
+                                  stats.device_bytes_freed)
+          : 0;
+#else
+  out.deviceBytesPeak = 0;
+  out.deviceBytesLive = 0;
+#endif
+
+  return out;
+}
+
 namespace {
 
 // Attempts a zero-copy import of host memory; falls back to a staged copy when
@@ -286,13 +360,27 @@ BufferViewPtr ImportOrCopy(iree_hal_device_t* device,
     auto& cached = state.cachedStaging[input_index];
     auto& cachedSize = state.cachedStagingSizes[input_index];
     if (cached == nullptr || cachedSize < input.nbytes) {
+      // Retire the old buffer and its contribution to the running sum together,
+      // BEFORE attempting the new allocation. IREE_CHECK_OR_THROW below can
+      // leave this slot empty, and dropping the contribution first means the
+      // sum then reports what is actually allocated (nothing for this slot)
+      // rather than a buffer that has already been freed. It also keeps the
+      // subtraction from ever underflowing: whenever cachedSize is non-zero the
+      // sum includes it. Relaxed on both, like the import counters — a
+      // standalone cumulative figure with no ordering constraint against the
+      // reader.
       cached.reset();
+      state.stagingBytesTotal.fetch_sub(static_cast<uint64_t>(cachedSize),
+                                        std::memory_order_relaxed);
+      cachedSize = 0;
       iree_hal_buffer_t* raw_buffer = nullptr;
       IREE_CHECK_OR_THROW(iree_hal_allocator_allocate_buffer(
           allocator, params, static_cast<iree_device_size_t>(input.nbytes),
           &raw_buffer));
       cached.reset(raw_buffer);
       cachedSize = static_cast<iree_device_size_t>(input.nbytes);
+      state.stagingBytesTotal.fetch_add(static_cast<uint64_t>(cachedSize),
+                                        std::memory_order_relaxed);
     }
     if (state.stagingMode == IreeRuntime::StagingMode::kCachedMapWrite) {
       IREE_CHECK_OR_THROW(iree_hal_buffer_map_write(
@@ -338,6 +426,12 @@ std::vector<BufferViewPtr> RunCall(RuntimeState& state,
   for (size_t i = 0; i < inputs.size(); ++i) {
     auto view = ImportOrCopy(state.device.get(), allocator, inputs[i], i, state,
                              &state.lastImportOutcomes[i]);
+    // Count the outcome ImportOrCopy just recorded rather than re-deriving it.
+    if (state.lastImportOutcomes[i] == IreeRuntime::ImportOutcome::kWrapped) {
+      state.wrappedImports.fetch_add(1, std::memory_order_relaxed);
+    } else {
+      state.stagedImports.fetch_add(1, std::memory_order_relaxed);
+    }
     IREE_CHECK_OR_THROW(iree_runtime_call_inputs_push_back_buffer_view(
         call.get(), view.get()));
     input_views.push_back(std::move(view));

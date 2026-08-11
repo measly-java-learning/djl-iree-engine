@@ -38,6 +38,27 @@ struct OutputLayout {
   uint64_t nbytes;
 };
 
+// Cold-path observability read. Never called from Invoke/InvokeViews.
+//
+// stagingBytes is the sum of the grow-only per-slot staging buffers the cached
+// staging modes retain. It is exact at all times, including during a concurrent
+// call: ImportOrCopy maintains it as a single atomic running sum, so a poll
+// never observes the per-slot table mid-resize. It is structurally 0 under
+// kAllocatePerCall, which retains none.
+//
+// deviceBytes* come from IREE's HAL allocator statistics. Each runtime owns its
+// own device, so these are already scoped to exactly one model. When
+// statisticsAvailable is false the two device figures are 0 and meaningless —
+// the caller is responsible for reporting them as "unavailable".
+struct RuntimeStats {
+  uint64_t wrappedImports;
+  uint64_t stagedImports;
+  uint64_t stagingBytes;
+  uint64_t deviceBytesPeak;
+  uint64_t deviceBytesLive;
+  bool statisticsAvailable;
+};
+
 struct RuntimeState;  // pimpl
 
 // One parameter archive bound to a scope name. `scope` is the name the compiled
@@ -117,11 +138,31 @@ class IreeRuntime {
   // Deliberately part of the API, not a log line, so tests can assert it.
   std::span<const ImportOutcome> lastImportOutcomes() const;
 
+  // Cumulative, monotonic, per-runtime. Unlike lastImportOutcomes() these have
+  // no validity window: they are safe to read at any time between construction
+  // and destruction, including concurrently with a call in flight. Every figure
+  // is exact — see RuntimeStats.
+  RuntimeStats Stats() const;
+
   explicit IreeRuntime(std::unique_ptr<RuntimeState> state);
 
  private:
   std::unique_ptr<RuntimeState> state_;
 };
+
+// Live IreeRuntime instances. A leak probe for the JVM-side stress tests and
+// the native harness: unlike LSan, which sees only unreachable memory, this
+// counter catches a runtime that is retained forever. Mirrors
+// AlignedLiveCount() in core/aligned_alloc.h.
+int64_t AliveRuntimeCount();
+
+// Whether IREE's HAL allocator statistics are compiled into this build, i.e.
+// whether RuntimeStats::deviceBytesPeak/deviceBytesLive carry meaning. This is
+// a build property fixed at compile time (see the IREE_STATISTICS_ENABLE
+// agreement check in native/CMakeLists.txt), so it is deliberately answerable
+// WITHOUT a runtime handle — a monitoring poll must be able to report it before
+// the first model loads and after the last one closes.
+bool StatisticsAvailable();
 
 }  // namespace measly::iree
 #endif  // MEASLY_IREE_RUNTIME_H

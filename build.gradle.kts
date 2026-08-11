@@ -66,7 +66,7 @@ val ireeElementTypesPath = ireeElementTypesOverride
     ?: ireeMetadataDir.get().file("element_types.json").asFile.path
 
 tasks.test {
-    useJUnitPlatform { excludeTags("leak", "oom") }
+    useJUnitPlatform { excludeTags("leak", "oom", "stress") }
     jvmArgs("-XX:+HeapDumpOnOutOfMemoryError")
     finalizedBy(tasks.jacocoTestReport)
     // IreeDataTypesTest validates the codegen against the same manifest/mappings it consumed.
@@ -83,6 +83,14 @@ tasks.register<Test>("leakTest") {
     classpath = sourceSets["test"].runtimeClasspath
     useJUnitPlatform { includeTags("leak") }
     jvmArgs("-Xmx256m", "-XX:MaxDirectMemorySize=64m", "-XX:+HeapDumpOnOutOfMemoryError")
+}
+
+tasks.register<Test>("stressTest") {
+    description = "Concurrency stress tests for the observability snapshot."
+    group = "verification"
+    testClassesDirs = sourceSets["test"].output.classesDirs
+    classpath = sourceSets["test"].runtimeClasspath
+    useJUnitPlatform { includeTags("stress") }
 }
 
 // The OOM-contract fixture is a 512 MiB-output splat module (134217728 x f32),
@@ -149,18 +157,59 @@ val generateIreeDataTypes = tasks.register<IreeDataTypeCodegen>("generateIreeDat
     outputDir.set(generatedIreeSourcesDir)
 }
 
+// The pinned dist tag as a Java constant. Sourced from the same properties file the
+// native build's pin generates, so there is no version literal in Java and no second
+// source of truth.
+//
+// Its OWN output directory, not generatedIreeSourcesDir. Two tasks declaring the same
+// output directory is a state Gradle explicitly flags: it disables build-cache
+// eligibility for both, and because nothing orders these two against each other, it is
+// a live hazard the moment IreeDataTypeCodegen becomes @CacheableTask — Gradle clears a
+// cached task's output directory before unpacking into it, which would delete
+// IreeRuntimeInfo.java if this task had already run. Separate directories, both on the
+// main source set, cost one line and remove the coupling entirely.
+val ireeDistTag = ireeMetadata.getProperty("ireeRuntimeDistTag", "unknown")
+
+val generatedIreeRuntimeInfoDir = layout.buildDirectory.dir("generated/sources/iree-runtime-info")
+
+val generateIreeRuntimeInfo = tasks.register("generateIreeRuntimeInfo") {
+    val outDir = generatedIreeRuntimeInfoDir
+    val tag = ireeDistTag
+    inputs.property("ireeDistTag", tag)
+    outputs.dir(outDir)
+    doLast {
+        val pkgDir = outDir.get().asFile.resolve("org/measly/iree/engine")
+        pkgDir.mkdirs()
+        pkgDir.resolve("IreeRuntimeInfo.java").writeText(
+            """
+            package org.measly.iree.engine;
+
+            /** Generated from third-party/iree-runtime-metadata.properties. Do not edit. */
+            public final class IreeRuntimeInfo {
+
+                /** The pinned iree-runtime-dist release tag, e.g. "v3.11.0-11". */
+                public static final String DIST_TAG = "$tag";
+
+                private IreeRuntimeInfo() {}
+            }
+            """.trimIndent() + "\n"
+        )
+    }
+}
+
 sourceSets {
     main {
         java.srcDir(generatedIreeSourcesDir)
+        java.srcDir(generatedIreeRuntimeInfoDir)
     }
 }
 
 tasks.named("compileJava") {
-    dependsOn(generateIreeDataTypes)
+    dependsOn(generateIreeDataTypes, generateIreeRuntimeInfo)
 }
 
 tasks.matching { it.name == "sourcesJar" }.configureEach {
-    dependsOn(generateIreeDataTypes)
+    dependsOn(generateIreeDataTypes, generateIreeRuntimeInfo)
 }
 
 // LibUtils resolves the native library from IREE_LIBRARY_PATH before falling

@@ -26,9 +26,10 @@ Java-side packaging concerns (multi-release JARs, module descriptors,
 `--enable-native-access`, how DJL selects a front-end) are explicitly **out of scope**.
 
 **Companion document**: the same question was worked through for the ExecuTorch engine first —
-`/home/corey/workspace/djl-executorch-engine/docs/panama-research-sketch.md`. Both files are
-uncommitted scratch, hence the absolute path. Several conclusions here are stated as deltas
-against that analysis, because the two engines differ in ways that matter.
+`/home/corey/workspace/djl-executorch-engine/docs/panama-research-sketch.md`. This file is
+tracked in this repo (the absolute path above is kept so the sibling file can be opened
+directly). Several conclusions here are stated as deltas against that analysis, because the two
+engines differ in ways that matter.
 
 ## Verdict
 
@@ -47,11 +48,14 @@ Three of ExecuTorch's blockers do not exist here.
 
 **Outputs are owning.** `OutputBuffer` holds its own `std::vector<std::byte>` and every IREE
 handle is released before `Invoke()` returns (`core/iree_runtime.h:23-29`, and the closing
-comment at `core/iree_runtime.cpp:205-206`). ExecuTorch's `ForwardResult` hands back borrowed
+comment at `core/iree_runtime.cpp:426-427`). ExecuTorch's `ForwardResult` hands back borrowed
 views into the runtime's arena, so its lifetime had to be exported to Java. Here, nothing but
 bytes crosses. That was the single real design change over there, and it is already solved here.
 
-**No upcalls are needed at all.** There is no PAL/logging bridge in `native/jni/`. The whole
+**No upcalls are needed at all.** There is no PAL/logging bridge in `native/jni/` — still true,
+and the observability design's out-of-scope section
+(`docs/superpowers/specs/2026-08-10-production-observability-design.md` §"Out of scope") is the
+current statement of intent on that bridge. The whole
 `AttachCurrentThreadAsDaemon` / foreign-thread-upcall question — the biggest unknown in the
 ExecuTorch analysis, and the thing recommended to spike first — simply does not arise. Worth
 noting because `local-task` *does* spawn worker threads; we just never call back into Java from
@@ -117,14 +121,14 @@ cheap. It is not, for two reasons.
 ### 1. Everything valuable in the core is unenforced lifetime knowledge
 
 - The vmfb bytes must outlive the session because `append_bytecode_module_from_memory` with a
-  null allocator does not copy (`core/iree_runtime.cpp:11-15`) — the field ordering in
+  null allocator does not copy (`core/iree_runtime.cpp:26-29`) — the field ordering in
   `RuntimeState` is load-bearing for destruction order.
 - `iree_status_t` is a heap object that must be consumed **exactly once**; dropping one leaks it
   and its message payload (`core/iree_status.h:10-13`). Note the status that must be freed on the
-  *success-adjacent* import path (`core/iree_runtime.cpp:126-128`) — exactly the kind of thing a
+  *success-adjacent* import path (`core/iree_runtime.cpp:298-299`) — exactly the kind of thing a
   reimplementation gets wrong silently.
 - `iree_runtime_call_t` is a value type with no release, needing a scope guard rather than a
-  handle (`core/iree_handles.h:29-31`).
+  handle (`core/iree_handles.h:55-57`).
 
 IREE's headers enforce none of this. Duplicating it into a language with no destructors, against
 a JNI path doing the same thing in C++, is a guaranteed defect. **IRPA makes this decisive — see
@@ -132,7 +136,7 @@ below.**
 
 ### 2. A hard packaging blocker
 
-`native/CMakeLists.txt:85`:
+`native/CMakeLists.txt:211`:
 
 ```cmake
 target_link_options(iree_djl PRIVATE -Wl,--exclude-libs,ALL)
@@ -183,7 +187,10 @@ whoever implements it:
 
 - **Invoke does not change.** Buffer views in, views popped out, `ImportOrCopy`'s
   import-or-stage fallback intact. The hot, per-inference, ABI-sensitive path Panama cares most
-  about can be frozen **now**, with high confidence.
+  about can be frozen **now**, with high confidence. — **CORRECTED 2026-08-11: that claim did
+  not hold.** `ec95080` changed invoke two weeks later (cached staging, a direct output map,
+  `InvokeViews`). This weakens the "build the facade before IRPA lands" sequencing argument
+  further: the load surface is not the only thing still in motion.
 - **Load is called once per model.** Zero perf sensitivity, free to be coarse and opaque — and
   IRPA is precisely a load-time feature (parameter scopes, archive paths).
 
@@ -224,7 +231,7 @@ Supporting details, both already settled by the scoping notes:
 - **The vmfb should cross as pointer+length.** Whether the facade copies it (it does today, and
   must, per the null-allocator rule) stays an implementation detail behind the ABI rather than
   part of the contract.
-- **Extract-to-temp for jar-bundled models** (scoping notes line 149) is resolved above the
+- **Extract-to-temp for jar-bundled models** (scoping notes line 192) is resolved above the
   boundary in Java, identically for both front-ends. No C-API pressure.
 
 ### ~~IRPA is what makes direct binding indefensible~~ — WITHDRAWN 2026-07-25; a weaker argument replaces it
@@ -267,7 +274,7 @@ grounds:
   silent-corruption risk — a genuinely weaker point than the ownership argument it replaces.
 - It must maintain the **consume-exactly-once status discipline** (`core/iree_status.h:10-13`),
   which is unchanged by this spike and remains the strongest item in the section above.
-- **The packaging blocker is untouched.** `-Wl,--exclude-libs,ALL` (`native/CMakeLists.txt:85`)
+- **The packaging blocker is untouched.** `-Wl,--exclude-libs,ALL` (`native/CMakeLists.txt:211`)
   hides IREE's symbols; Panama cannot bind what is not exported. The spike did not go near
   this, and it stands unaffected. **This, not IRPA, is the load-bearing objection to direct
   binding.**
@@ -291,16 +298,20 @@ now), but "retrofitting IRPA afterwards" is a smaller cost than this document as
    already renders the message into a `std::string` before freeing the status.
 2. **Flatten the boundary structs.** `InputDesc` and `OutputBuffer` embed `std::vector`
    (`core/iree_runtime.h:16-29`); FFM needs POD pointer+length pairs.
-3. **Decide the result-set protocol.** `Invoke` returns `std::vector<OutputBuffer>` by value.
-   Through C that is either a heap handle plus explicit free, *or* a two-call protocol (query
-   shapes/sizes, then copy into caller-provided destinations). The second is more attractive here
-   than it was for ExecuTorch precisely because the data is already an owned copy — Panama hands
-   down an `Arena` segment and the intermediate disappears. Strictly better than what JNI does
-   today at `jni/iree_djl_jni.cpp:187-198` (`allocateDirect` + `memcpy`).
-4. **Fold `lastImportOutcomes` into the invoke result.** It is call-scoped mutable state on the
-   runtime today (`core/iree_runtime.cpp:157`, `core/iree_runtime.h:53-55`). Fine while JNI
-   serialises access, but as a separate query on a shared C boundary the two front-ends will
-   eventually disagree about when it is valid.
+3. **Decide the result-set protocol.** — **SUBSTANTIALLY SUPERSEDED 2026-08-11 by `ec95080`**,
+   which landed `InvokeViews`/`ReadOutput`/`ReleaseOutputs` — the two-call query-then-copy
+   protocol this item recommended, at the C++ level. The JNI shim already drives it
+   (`jni/iree_djl_jni.cpp:270-330`: `InvokeViews` queries shapes, `allocateDirect` supplies the
+   destination, `ReadOutput` map_reads into it). What remains is only the Panama-side shape of
+   that protocol (an `Arena` segment as the caller-provided destination), not whether the
+   boundary should have one.
+4. **Fold `lastImportOutcomes` into the invoke result.** — **RESOLVED 2026-08-11 by this
+   cycle's cumulative counters, not by folding.** The worry was that call-scoped mutable state
+   queried separately leaves two front-ends disagreeing about when it is valid. Monotonic
+   cumulative counters (`wrappedImports`/`stagedImports`, surfaced via
+   `IreeEngineStats.snapshot()`) have no validity window, so there is nothing to disagree about.
+   `lastImportOutcomes` survives with one consumer — tests asserting that a specific call
+   zero-copied — and is now documented as the test affordance it already was in practice.
 5. **Keep every struct opaque** — handles plus accessor functions, never exported layouts. Once
    Java is compiled against a `MemoryLayout`, that layout is ABI owned forever, and it is the
    thing most likely to shift as IRPA and tier selection grow the load surface. Accessor call
@@ -308,7 +319,7 @@ now), but "retrofitting IRPA afterwards" is a smaller cost than this document as
 6. **Ship an `iree_djl_abi_version()`.** The JNI shim cannot mismatch; Panama bindings can.
 7. **Symbol visibility policy.** Export exactly the `iree_djl_*` symbols while keeping IREE's
    hidden — a version script or explicit `__attribute__((visibility("default")))`. Do **not**
-   simply drop `--exclude-libs,ALL` (`native/CMakeLists.txt:85`).
+   simply drop `--exclude-libs,ALL` (`native/CMakeLists.txt:211`).
 8. ~~**An IRPA fixture for the leak harness.**~~ — **DONE 2026-07-25** by the scoping notes'
    spike (Part 4), exactly as this item anticipated (build it once, shared). Delivered:
    - Fixtures generated by `tools/export_scale.sh` from `tools/scale.mlir` / `tools/scale2.mlir`:

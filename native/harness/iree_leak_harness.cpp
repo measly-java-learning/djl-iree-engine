@@ -6,6 +6,7 @@
 // `local-sync` driver the process stays single-threaded (TSan clean, zero
 // clone/clone3, Threads: 1 per /proc/<pid>/status), which is what keeps the
 // ASan/LSan run deterministic. See docs/superpowers/specs/2026-07-19-djl-iree-engine-findings.md.
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -17,6 +18,7 @@
 #include <string>
 #include <vector>
 
+#include "core/aligned_alloc.h"
 #include "core/iree_runtime.h"
 
 using measly::iree::InputDesc;
@@ -66,6 +68,83 @@ void HappyPathCycle(const std::vector<std::byte>& vmfb, const char* driver) {
     std::fprintf(stderr, "golden mismatch: %f %f\n", r[0], r[3]);
     std::exit(72);
   }
+}
+
+// One runtime, many invokes. The load/invoke/close cycle above tears the runtime
+// down each iteration, which frees everything and therefore MASKS a per-invoke
+// leak — staging regrowth, or an output view never released. This loop keeps one
+// runtime alive and asserts the gauges settle, which is the assertion LSan
+// structurally cannot make: a buffer retained by a live runtime is reachable.
+void IntraRuntimeInvokeCycle(const std::vector<std::byte>& vmfb, const char* driver) {
+  // kCachedMapWrite explicitly: kAllocatePerCall retains no cached staging
+  // buffers, so stagingBytes would be structurally zero and assert nothing.
+  auto runtime = IreeRuntime::Load(vmfb, kEntryPoint, driver,
+                                   std::span<const ParameterScope>{},
+                                   IreeRuntime::StagingMode::kCachedMapWrite);
+  // DELIBERATELY MISALIGNED. Stack arrays would leave the staging assertions at
+  // the mercy of where the frame happens to land: a 64-byte-aligned frame makes
+  // both inputs import zero-copy, stagingBytes stays 0, and
+  // `stagingAfterFirst == stats.stagingBytes` becomes 0 == 0 — a green
+  // assertion that exercised nothing. Offsetting past the boundary forces the
+  // staging fallback every run, on every host.
+  auto* backing = static_cast<std::byte*>(measly::iree::AlignedAlloc(256));
+  auto* lhs = reinterpret_cast<float*>(backing + 4);
+  auto* rhs = reinterpret_cast<float*>(backing + 128 + 4);
+  for (int i = 0; i < 4; ++i) {
+    lhs[i] = static_cast<float>(i + 1);
+    rhs[i] = static_cast<float>((i + 1) * 10);
+  }
+  std::vector<InputDesc> inputs = {
+      {lhs, 4 * sizeof(float), {4}, kF32},
+      {rhs, 4 * sizeof(float), {4}, kF32},
+  };
+
+  (void)runtime->Invoke(inputs);
+  if (runtime->Stats().stagedImports != 2) {
+    std::fprintf(stderr,
+                 "expected both misaligned inputs to stage, got %llu staged\n",
+                 static_cast<unsigned long long>(runtime->Stats().stagedImports));
+    std::exit(70);
+  }
+  // Baselines AFTER the first invoke: the first call allocates the grow-only
+  // cached staging buffers (one DEVICE_LOCAL buffer per input slot, retained
+  // for the runtime's lifetime by design), so a pre-invoke deviceBytesLive
+  // baseline would count exactly that intentional footprint as a "leak" and
+  // fail structurally. What these baselines detect is GROWTH across invokes.
+  const uint64_t deviceBaseline = runtime->Stats().deviceBytesLive;
+  const uint64_t stagingAfterFirst = runtime->Stats().stagingBytes;
+  if (stagingAfterFirst == 0) {
+    std::fprintf(stderr, "staging baseline is 0; the growth check would be vacuous\n");
+    std::exit(70);
+  }
+
+  for (int i = 0; i < 500; ++i) {
+    (void)runtime->Invoke(inputs);
+  }
+
+  const auto stats = runtime->Stats();
+  if (stats.stagingBytes != stagingAfterFirst) {
+    std::fprintf(stderr,
+                 "staging footprint grew across invokes: %llu -> %llu\n",
+                 static_cast<unsigned long long>(stagingAfterFirst),
+                 static_cast<unsigned long long>(stats.stagingBytes));
+    std::exit(71);
+  }
+  if (stats.deviceBytesLive != deviceBaseline) {
+    std::fprintf(stderr,
+                 "device bytes did not return to baseline: %llu -> %llu\n",
+                 static_cast<unsigned long long>(deviceBaseline),
+                 static_cast<unsigned long long>(stats.deviceBytesLive));
+    std::exit(72);
+  }
+  if (stats.wrappedImports + stats.stagedImports != 2 * 501) {
+    std::fprintf(stderr, "unexpected import count: %llu\n",
+                 static_cast<unsigned long long>(stats.wrappedImports +
+                                                 stats.stagedImports));
+    std::exit(73);
+  }
+
+  measly::iree::AlignedFree(backing);
 }
 
 // Every throw path, looped. This is the highest-value part of the harness:
@@ -168,6 +247,19 @@ void ParamCycle(const std::vector<std::byte>& vmfb, const char* driver,
     }
   }
 }
+// Every exit path must run this, including the parameter-bound early return —
+// that is the path most likely to strand a runtime, since it holds io_parameters
+// resources the others never touch.
+bool RuntimeCensusIsClean() {
+  const int64_t alive = measly::iree::AliveRuntimeCount();
+  if (alive != 0) {
+    std::fprintf(stderr, "runtimes still alive at exit: %lld\n",
+                 static_cast<long long>(alive));
+    return false;
+  }
+  return true;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -198,6 +290,7 @@ int main(int argc, char** argv) {
     // add-specific Happy/Error/ImportEscape paths above.
     for (int i = 0; i < iterations; ++i) ParamCycle(vmfb, driver, params);
     std::printf("param cycles: %d cycles ok\n", iterations);
+    if (!RuntimeCensusIsClean()) return 74;
     std::printf("HARNESS PASS\n");
     return 0;
   }
@@ -205,11 +298,16 @@ int main(int argc, char** argv) {
   for (int i = 0; i < iterations; ++i) HappyPathCycle(vmfb, driver);
   std::printf("happy path: %d cycles ok\n", iterations);
 
+  IntraRuntimeInvokeCycle(vmfb, driver);
+  std::printf("intra-runtime invoke cycle ok\n");
+
   for (int i = 0; i < iterations; ++i) ErrorPathCycle(vmfb, driver);
   std::printf("error paths: %d cycles ok\n", iterations);
 
   ImportEscapeCheck(vmfb, driver);
   std::printf("import escape check ok\n");
+
+  if (!RuntimeCensusIsClean()) return 74;
 
   std::printf("HARNESS PASS\n");
   return 0;

@@ -55,8 +55,17 @@ public class IreeModel extends BaseModel {
             i++;
         }
 
+        final long loadStart = System.nanoTime();
         long handle = IreeNative.load(bytes, entryPoint, opts.device(), scopes, paths);
-        block = new IreeSymbolBlock((IreeNDManager) manager, handle);
+        final long loadNanos = System.nanoTime() - loadStart;
+
+        IreeSymbolBlock symbolBlock = new IreeSymbolBlock((IreeNDManager) manager, handle);
+        IreeModelCounters counters =
+                new IreeModelCounters(modelName, opts.device(), entryPoint, count, loadNanos);
+        symbolBlock.attachCounters(counters);
+        IreeEngineStats.register(handle, symbolBlock, counters);
+        IreeEngineStats.registerMBeanOnce();
+        block = symbolBlock;
     }
 
     @Override
