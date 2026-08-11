@@ -1,13 +1,28 @@
-# Point clangd at the CMake-generated compile_commands.json. The path is
-# relative to this file's directory, so it resolves the same for every clone.
+# Point clangd at a compile database that no build script ever touches.
 #
-# Generate the database once (see "Editor setup (clangd)" in README.md):
-#   cmake -S native -B native/build -G Ninja -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+# Generate or refresh it with:
+#   ./native/gen_clangd_db.sh          (see "Editor setup (clangd)" in README.md)
 #
-# Only this file is committed. compile_commands.json itself never is: its entries
-# carry absolute paths (the build tree, the fetched runtime's include dir, the
-# JDK, and the .vmfb/.irpa fixture paths passed as -D macro values), so it is
-# valid only on the machine that generated it. native/build is already ignored
-# by the `**/build/` rule in .gitignore.
+# Why not native/build: that tree is the shipping shim's, and the blessed build path
+# (native/local_build_wrapper.sh) runs native/build.sh in the manylinux container, where the
+# repo sits at /workspace. Every container build reconfigures native/build, so a database
+# cached there holds container-absolute paths (/workspace/...) that host clangd cannot resolve
+# -- and native/build.sh never writes one at all (it does not pass
+# -DCMAKE_EXPORT_COMPILE_COMMANDS=ON), so after a container build there is no database to
+# resolve anything with. native/build-clangd is written only by gen_clangd_db.sh, so it
+# survives every build.
+#
+# Why that script instead of a manual host configure of native/build: the two would share one
+# tree, and the database would flip between host paths and container paths depending on which
+# world configured last. A dedicated tree cannot flip, and the script fails loudly when no JDK
+# (find_package(JNI REQUIRED)) is available on the host.
+#
+# STALENESS: the database is refreshed only when you run that script. After a bump of
+# native/cmake/IreeRuntimePin.cmake it keeps resolving against the OLD runtime headers,
+# silently and with no warning. Re-run the script as part of the pin-bump procedure.
+#
+# Only this file is committed. native/build-clangd/ is git-ignored: its entries carry absolute
+# paths (the build tree, the fetched runtime's include dir, the JDK, and the .vmfb/.irpa
+# fixture paths passed as -D macro values), so it is valid only on the machine that generated it.
 CompileFlags:
-  CompilationDatabase: native/build
+  CompilationDatabase: native/build-clangd

@@ -34,6 +34,8 @@ native/asan/
 native/qa_noasan/
 native/qa/
 native/tsan/
+# clangd compile database (native/gen_clangd_db.sh). Absolute paths: host-specific by nature.
+native/build-clangd/
 
 src/main/resources/native/**/*.so
 src/main/resources/native/**/*.dylib
