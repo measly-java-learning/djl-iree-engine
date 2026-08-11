@@ -70,7 +70,7 @@ source tree, no IREE build tree, and no compiler required** to build or test thi
   `generateIreeDataTypes`.
 - Network access, to fetch the pinned `iree-runtime-dist` tarball (SHA256-verified against
   `native/cmake/IreeRuntimePin.cmake`; a tampered hash fails hard at configure time). The
-  native *test* build additionally fetches Catch2 (v3.15.2) via `FetchContent`'s
+  native *test* build additionally fetches Catch2 (v3.15.3) via `FetchContent`'s
   `GIT_REPOSITORY`/`GIT_TAG` (unpinned by hash) — this needs `git` on `PATH` and network
   access to GitHub as a second host.
 
@@ -136,6 +136,25 @@ symlink escape is caught too.
 caller keeps an override because a `.vmfb` may export several. `device` and `allowUnsafePaths`
 are policy and never read from a manifest. `allowUnsafePaths` opts out of the containment check
 above by name — a manifest can never authorize its own path escapes.
+
+### Zero-copy inputs (experimental)
+
+The engine copies caller data into engine-owned buffers on every call by default. Set
+`-Diree.engine.alignedBuffers=true` to have `NDManager.create` allocate 64-byte-aligned
+buffers instead; those import into the IREE runtime zero-copy. The flag is read per allocation,
+so it can be toggled around a measurement.
+
+JDK `ByteBuffer.allocateDirect` buffers are **not** reliably importable: the JVM guarantees
+only 8-byte alignment and IREE requires 64 (`IREE_HAL_HEAP_BUFFER_ALIGNMENT`), so a
+user-supplied direct buffer imports zero-copy only when its malloc'd address happens to be
+aligned (~40% of small allocations) and otherwise stages a copy into a per-runtime cached
+staging buffer (reused across calls — the fallback no longer allocates a fresh buffer per
+call; measured recovery ~85% of the staged-vs-wrapped delta at ≥ 4 MB). The engine
+allocates; the user writes into what the engine hands back. Measured impact, two workload
+shapes: for memory-bound kernels the staged copy costs up to ~90% of the call at 256 KB–4 MB
+inputs; for compute-heavy models (MobileNet, 61.6 ms kernel) the copy is ~0.5% noise. Full
+measurements: `docs/2026-08-04-borrowed-host-buffers-findings.md` §3 and
+`docs/2026-08-04-staging-and-output-findings.md`.
 
 ## Build and test
 

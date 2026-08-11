@@ -137,7 +137,7 @@ target_link_libraries(iree_djl_core PUBLIC
 include(FetchContent)
 FetchContent_Declare(Catch2
     GIT_REPOSITORY https://github.com/catchorg/Catch2.git
-    GIT_TAG v3.15.2)
+    GIT_TAG v3.15.3)
 FetchContent_MakeAvailable(Catch2)
 
 add_executable(iree_runtime_test test/iree_runtime_test.cpp)
@@ -161,6 +161,13 @@ add_executable(iree_leak_harness harness/iree_leak_harness.cpp)
 target_link_libraries(iree_leak_harness PRIVATE iree_djl_core)
 target_compile_definitions(iree_leak_harness PRIVATE
     IREE_DJL_ADD_VMFB="${IREE_DJL_FIXTURE_DIR}/add.vmfb")
+
+# W2 copy-cost measurement (spike 2026-08-04): memcpy cost vs kernel time per
+# tensor size. Same pattern as iree_leak_harness — plain main over iree_djl_core,
+# JVM-free, no fixture compile definitions (paths come from argv; fixtures are
+# generated at bench time by tools/export_bigscale.sh, never committed).
+add_executable(iree_copy_bench bench/iree_copy_bench.cpp)
+target_link_libraries(iree_copy_bench PRIVATE iree_djl_core)
 
 # JNI shim (Task 7): thin marshalling layer over iree_djl_core. Skipped under any
 # sanitizer: sanitized builds are QA-only, never shipped, and JVM-free — so they must

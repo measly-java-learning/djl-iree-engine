@@ -63,6 +63,16 @@ tasks.named("jmh") {
     outputs.upToDateWhen { false }
 }
 
+// The plugin's standard fat jar writes META-INF/services/ai.djl.engine.EngineProvider
+// twice — this project's IREE provider and djl-api's built-in RPC provider — as two
+// separate zip entries. java.util.zip.ZipFile resolves duplicate names last-entry-wins,
+// so RPC shadows IREE and Engine.getEngine("IREE") fails in every benchmark fork.
+// EXCLUDE keeps the first entry; project classes are added before the runtime
+// classpath, so the surviving entry is the IREE provider.
+tasks.named<Jar>("jmhJar") {
+    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+}
+
 jmh {
     warmupIterations = 3
     iterations = 5

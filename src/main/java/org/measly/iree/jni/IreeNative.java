@@ -37,6 +37,37 @@ public final class IreeNative {
     public static native void close(long handle);
 
     /**
+     * Address of a direct {@link ByteBuffer}'s backing memory, or 0 for a
+     * non-direct buffer (JNI spec). The JVM guarantees nothing stronger than
+     * 8-byte alignment for its own direct buffers; the engine's aligned
+     * buffers (see {@link IreeNative#allocateDirectAligned}) are
+     * 64-byte-aligned by construction.
+     */
+    public static native long bufferAddress(ByteBuffer buffer);
+
+    /**
+     * Allocates a direct {@link ByteBuffer} over engine-owned native memory,
+     * 64-byte-aligned (IREE's zero-copy import precondition).
+     *
+     * <p><b>Borrow contract:</b> the backing memory is NOT GC-managed. The
+     * caller must free it exactly once via {@link #freeDirectAligned(long)}
+     * with this buffer's {@link #bufferAddress(ByteBuffer)} — the engine wires
+     * this through a {@link java.lang.ref.Cleaner}, so plain Java code never
+     * calls it directly. Freeing twice, or freeing an address owned by a
+     * JVM-allocated buffer, is a native crash.
+     */
+    public static native ByteBuffer allocateDirectAligned(int capacity);
+
+    /**
+     * Frees an aligned allocation by address. {@code 0} is a no-op. Called
+     * exactly once per buffer, from the registered Cleaner.
+     */
+    public static native void freeDirectAligned(long address);
+
+    /** Live engine-allocated aligned buffers (leak probe for tests). */
+    public static native long aliveAlignedBuffers();
+
+    /**
      * Per-input import outcome from the last invoke: 1 = zero-copy wrap,
      * 0 = staged copy. Exposed so tests can assert what actually happened
      * rather than assuming a borrow.

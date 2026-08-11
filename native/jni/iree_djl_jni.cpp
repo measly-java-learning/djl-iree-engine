@@ -3,15 +3,18 @@
 // heap-allocated IreeRuntime.
 #include <jni.h>
 
-#include <cstring>
 #include <memory>
 #include <new>
 #include <span>
 #include <string>
 #include <vector>
 
+#include "core/aligned_alloc.h"
 #include "core/iree_runtime.h"
 
+using measly::iree::AlignedAlloc;
+using measly::iree::AlignedFree;
+using measly::iree::AlignedLiveCount;
 using measly::iree::InputDesc;
 using measly::iree::IreeRuntime;
 using measly::iree::ParameterScope;
@@ -133,7 +136,15 @@ Java_org_measly_iree_jni_IreeNative_load(JNIEnv* env, jclass,
   }
 
   try {
-    auto runtime = IreeRuntime::Load(bytes, entry_copy, driver_copy, parameters);
+    // Staging default: kCachedMapWrite — the winning cached-staging mode from
+    // the staging/output spike (docs/2026-08-04-staging-and-output-findings.md).
+    // The staged fallback reuses a grow-only per-slot staging buffer instead
+    // of allocating a fresh HAL buffer per call (recovering ~85% of the
+    // staged-vs-wrapped delta at >= 4 MB); ImportOutcome semantics are
+    // unchanged (kStaged still means "copied"). The other Load overloads keep
+    // kAllocatePerCall for the native tests/harness.
+    auto runtime = IreeRuntime::Load(bytes, entry_copy, driver_copy, parameters,
+                                     IreeRuntime::StagingMode::kCachedMapWrite);
     return static_cast<jlong>(reinterpret_cast<intptr_t>(runtime.release()));
   } catch (const std::exception& e) {
     ThrowJava(env, e.what());
@@ -144,6 +155,16 @@ Java_org_measly_iree_jni_IreeNative_load(JNIEnv* env, jclass,
 extern "C" JNIEXPORT void JNICALL
 Java_org_measly_iree_jni_IreeNative_close(JNIEnv*, jclass, jlong handle) {
   delete AsRuntime(handle);
+}
+
+// Returns the address of a direct ByteBuffer's backing memory, or 0 for a
+// non-direct buffer (JNI spec). Used by the alignment probe and by the
+// aligned-buffer Cleaner wiring; the JVM guarantees nothing stronger than
+// long (8-byte) alignment for its own direct buffers.
+extern "C" JNIEXPORT jlong JNICALL
+Java_org_measly_iree_jni_IreeNative_bufferAddress(JNIEnv* env, jclass,
+                                                  jobject buffer) {
+  return reinterpret_cast<jlong>(env->GetDirectBufferAddress(buffer));
 }
 
 // Inputs and outputs both cross as direct ByteBuffers. Input addresses are
@@ -162,6 +183,16 @@ Java_org_measly_iree_jni_IreeNative_invoke(JNIEnv* env, jclass, jlong handle,
   }
 
   const jsize count = env->GetArrayLength(inputBuffers);
+  // The marshalling below indexes shapes[i]/types[i] for i in [0, count).
+  // A caller that passes shorter arrays would otherwise be out-of-bounds
+  // reads of the JNI copies (and, on some JVMs/layouts, a SIGSEGV in the
+  // interpreter's own bookkeeping — observed 2026-08-04 across three JDKs).
+  // Validate up front instead of trusting the caller.
+  if (env->GetArrayLength(inputShapes) != count ||
+      env->GetArrayLength(inputTypes) != count) {
+    ThrowJava(env, "inputs, shapes, and elementTypes must have the same length");
+    return nullptr;
+  }
   std::vector<InputDesc> inputs(static_cast<size_t>(count));
   std::vector<std::vector<int64_t>> shapes(static_cast<size_t>(count));
 
@@ -195,9 +226,9 @@ Java_org_measly_iree_jni_IreeNative_invoke(JNIEnv* env, jclass, jlong handle,
   }
   env->ReleaseIntArrayElements(inputTypes, types, JNI_ABORT);
 
-  std::vector<measly::iree::OutputBuffer> outputs;
+  std::vector<measly::iree::OutputLayout> layouts;
   try {
-    outputs = runtime->Invoke(inputs);
+    layouts = runtime->InvokeViews(inputs);
   } catch (const std::exception& e) {
     ThrowJava(env, e.what());
     return nullptr;
@@ -219,38 +250,54 @@ Java_org_measly_iree_jni_IreeNative_invoke(JNIEnv* env, jclass, jlong handle,
                                               "(I)Ljava/nio/ByteBuffer;");
   if (allocate == nullptr) return nullptr;
 
-  jobjectArray result =
-      env->NewObjectArray(static_cast<jsize>(outputs.size()), tensor_class, nullptr);
+  try {
+    jobjectArray result =
+        env->NewObjectArray(static_cast<jsize>(layouts.size()), tensor_class, nullptr);
 
-  for (size_t i = 0; i < outputs.size(); ++i) {
-    auto& out = outputs[i];
-    // Allocate a direct buffer the JVM owns and copy into it. The facade's
-    // OutputBuffer dies with this function; nothing native outlives the call.
-    jobject owned = env->CallStaticObjectMethod(
-        bb, allocate, static_cast<jint>(out.data.size()));
-    if (owned == nullptr || env->ExceptionCheck()) {
-      // allocateDirect failed (e.g. OutOfMemoryError). A pending exception
-      // will propagate to Java on its own once we return; calling
-      // GetDirectBufferAddress/memcpy on a null result with an exception
-      // pending is undefined behavior, so bail out cleanly without also
-      // throwing over it.
-      return nullptr;
+    for (size_t i = 0; i < layouts.size(); ++i) {
+      const auto& layout = layouts[i];
+      // Direct buffer the JVM owns; the facade map_reads straight into it, so
+      // this is the output path's ONLY copy — the intermediate owning vector
+      // (and the JNI memcpy) are gone. Nothing IREE-side outlives
+      // ReleaseOutputs() below; execution is synchronous, so the map_read
+      // completes before the views are released.
+      jobject owned = env->CallStaticObjectMethod(
+          bb, allocate, static_cast<jint>(layout.nbytes));
+      if (owned == nullptr || env->ExceptionCheck()) {
+        // allocateDirect failed (e.g. OutOfMemoryError). A pending exception
+        // will propagate to Java on its own once we return; calling
+        // GetDirectBufferAddress/map_read on a null result with an exception
+        // pending is undefined behavior, so bail out cleanly without also
+        // throwing over it.
+        runtime->ReleaseOutputs();
+        return nullptr;
+      }
+      void* dst = env->GetDirectBufferAddress(owned);
+      if (dst == nullptr) {
+        runtime->ReleaseOutputs();
+        ThrowJava(env, "output direct buffer has no address");
+        return nullptr;
+      }
+      runtime->ReadOutput(i, dst);
+
+      jlongArray shape = env->NewLongArray(static_cast<jsize>(layout.shape.size()));
+      env->SetLongArrayRegion(shape, 0, static_cast<jsize>(layout.shape.size()),
+                              reinterpret_cast<const jlong*>(layout.shape.data()));
+
+      jobject tensor = env->NewObject(tensor_class, ctor, owned, shape,
+                                      static_cast<jint>(layout.elementType));
+      env->SetObjectArrayElement(result, static_cast<jsize>(i), tensor);
+      env->DeleteLocalRef(tensor);
+      env->DeleteLocalRef(shape);
+      env->DeleteLocalRef(owned);
     }
-    std::memcpy(env->GetDirectBufferAddress(owned), out.data.data(),
-                out.data.size());
-
-    jlongArray shape = env->NewLongArray(static_cast<jsize>(out.shape.size()));
-    env->SetLongArrayRegion(shape, 0, static_cast<jsize>(out.shape.size()),
-                            reinterpret_cast<const jlong*>(out.shape.data()));
-
-    jobject tensor = env->NewObject(tensor_class, ctor, owned, shape,
-                                    static_cast<jint>(out.elementType));
-    env->SetObjectArrayElement(result, static_cast<jsize>(i), tensor);
-    env->DeleteLocalRef(tensor);
-    env->DeleteLocalRef(shape);
-    env->DeleteLocalRef(owned);
+    runtime->ReleaseOutputs();
+    return result;
+  } catch (const std::exception& e) {
+    runtime->ReleaseOutputs();  // idempotent; views released on any throw path
+    ThrowJava(env, e.what());
+    return nullptr;
   }
-  return result;
 }
 
 extern "C" JNIEXPORT jintArray JNICALL
@@ -270,4 +317,52 @@ Java_org_measly_iree_jni_IreeNative_lastImportOutcomes(JNIEnv* env, jclass,
   env->SetIntArrayRegion(result, 0, static_cast<jsize>(values.size()),
                          values.data());
   return result;
+}
+
+// --- W4 prototype: engine-allocated, 64-byte-aligned direct buffers ----------
+//
+// Borrow contract (see IreeNDManager): the buffer is engine-allocated native
+// memory exposed to Java via NewDirectByteBuffer, and freed by the registered
+// java.lang.ref.Cleaner (NOT by the JVM — NewDirectByteBuffer memory is not
+// GC-managed). Alignment is fixed at kBufferAlignment (64), so the matching
+// AlignedFree is unambiguous. A 64-aligned pointer imports zero-copy into
+// IREE (kWrapped) deterministically, unlike a JVM-allocated direct buffer
+// (see docs/2026-08-04-borrowed-host-buffers-findings.md §4).
+
+extern "C" JNIEXPORT jobject JNICALL
+Java_org_measly_iree_jni_IreeNative_allocateDirectAligned(JNIEnv* env, jclass,
+                                                          jint capacity) {
+  void* p = nullptr;
+  try {
+    p = AlignedAlloc(static_cast<size_t>(capacity));
+  } catch (const std::bad_alloc&) {
+    ThrowJava(env, "aligned allocation failed (out of memory)");
+    return nullptr;
+  }
+  jobject buffer = env->NewDirectByteBuffer(p, capacity);
+  if (buffer == nullptr) {
+    // OOM pending on the Java side (NewDirectByteBuffer returned null); the
+    // exception propagates on its own — don't throw over it, but do not leak
+    // the aligned block either.
+    AlignedFree(p);
+    return nullptr;
+  }
+  return buffer;
+}
+
+// Idempotent by contract: called exactly once per buffer, from the Cleaner.
+// 0 is a no-op (bufferAddress of a non-direct buffer).
+extern "C" JNIEXPORT void JNICALL
+Java_org_measly_iree_jni_IreeNative_freeDirectAligned(JNIEnv*, jclass,
+                                                      jlong address) {
+  if (address == 0) return;
+  AlignedFree(reinterpret_cast<void*>(static_cast<intptr_t>(address)));
+}
+
+// Native-side leak probe: the aligned buffers are JNI-allocated and not
+// counted against -XX:MaxDirectMemorySize, so the live count — not direct
+// memory pressure — is the leak signal for the Cleaner lifetime test.
+extern "C" JNIEXPORT jlong JNICALL
+Java_org_measly_iree_jni_IreeNative_aliveAlignedBuffers(JNIEnv*, jclass) {
+  return static_cast<jlong>(AlignedLiveCount());
 }

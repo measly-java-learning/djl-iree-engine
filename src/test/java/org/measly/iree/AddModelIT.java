@@ -12,6 +12,7 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
+import org.measly.iree.engine.IreeSymbolBlock;
 
 /** The walking-skeleton gate: add.vmfb through a real DJL Model. */
 class AddModelIT {
@@ -58,6 +59,41 @@ class AddModelIT {
                         outputs.get(0).toFloatArray(),
                         1e-6f);
             }
+        }
+    }
+
+    /**
+     * The end-to-end proof that {@code iree.engine.alignedBuffers=true} changes
+     * per-call behavior through the full DJL stack: engine-allocated aligned
+     * input buffers make every input import zero-copy (outcomes {1,1}), with
+     * the golden result unchanged. The flag is read per allocation, so setting
+     * it here (and clearing it in finally) is sufficient.
+     */
+    @Test
+    void runsAddWithAlignedBuffersFlag() throws Exception {
+        System.setProperty("iree.engine.alignedBuffers", "true");
+        try {
+            Path modelDir = Paths.get("src/test/resources/models");
+            try (Model model = Model.newInstance("add", "IREE")) {
+                model.load(modelDir, "add", Map.of("entryPoint", "module.add"));
+                try (NDManager manager = model.getNDManager().newSubManager()) {
+                    NDArray lhs = manager.create(new float[] {1f, 2f, 3f, 4f}, new Shape(4));
+                    NDArray rhs = manager.create(new float[] {10f, 20f, 30f, 40f}, new Shape(4));
+
+                    NDList outputs = model.getBlock().forward(null, new NDList(lhs, rhs), false);
+
+                    assertEquals(1, outputs.size());
+                    assertArrayEquals(
+                            new float[] {11f, 22f, 33f, 44f},
+                            outputs.get(0).toFloatArray(),
+                            1e-6f);
+                    assertArrayEquals(
+                            new int[] {1, 1},
+                            ((IreeSymbolBlock) model.getBlock()).getLastImportOutcomes());
+                }
+            }
+        } finally {
+            System.clearProperty("iree.engine.alignedBuffers");
         }
     }
 }

@@ -23,6 +23,9 @@ struct SessionDeleter {
 struct BufferViewDeleter {
   void operator()(iree_hal_buffer_view_t* p) const { iree_hal_buffer_view_release(p); }
 };
+struct BufferDeleter {
+  void operator()(iree_hal_buffer_t* p) const { iree_hal_buffer_release(p); }
+};
 struct FileHandleDeleter {
   void operator()(iree_io_file_handle_t* p) const { iree_io_file_handle_release(p); }
 };
@@ -42,6 +45,7 @@ using InstancePtr = std::unique_ptr<iree_runtime_instance_t, InstanceDeleter>;
 using DevicePtr = std::unique_ptr<iree_hal_device_t, DeviceDeleter>;
 using SessionPtr = std::unique_ptr<iree_runtime_session_t, SessionDeleter>;
 using BufferViewPtr = std::unique_ptr<iree_hal_buffer_view_t, BufferViewDeleter>;
+using BufferPtr = std::unique_ptr<iree_hal_buffer_t, BufferDeleter>;
 using FileHandlePtr = std::unique_ptr<iree_io_file_handle_t, FileHandleDeleter>;
 using ParameterIndexPtr = std::unique_ptr<iree_io_parameter_index_t, ParameterIndexDeleter>;
 using ParameterProviderPtr =

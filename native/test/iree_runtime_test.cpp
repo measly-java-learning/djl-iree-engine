@@ -1,4 +1,6 @@
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators_all.hpp>
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <cstdlib>
@@ -7,6 +9,7 @@
 #include <new>
 #include <span>
 #include <vector>
+#include "core/aligned_alloc.h"
 #include "core/iree_runtime.h"
 
 using measly::iree::IreeRuntime;
@@ -91,6 +94,250 @@ TEST_CASE("import outcome is recorded for every input", "[runtime][import]") {
        << (outcomes[0] == IreeRuntime::ImportOutcome::kWrapped ? "WRAPPED"
                                                                : "STAGED"));
   ::operator delete(aligned, std::align_val_t{64});
+}
+
+// The 64-byte contract is authoritative in the pinned dist:
+// IREE_HAL_HEAP_BUFFER_ALIGNMENT = 64 (iree/base/config.h:238-245) —
+// "Executables are compiled with alignment expectations and the runtime
+// alignment must be greater than or equal to the alignment set in the
+// compiler. External buffers wrapped by HAL buffers must meet this alignment
+// requirement." Measured 2026-07-19
+// (docs/superpowers/specs/2026-07-19-djl-iree-engine-findings.md:17-33) and
+// re-confirmed on the current tree: an aligned allocation imports zero-copy.
+// This assertion pins runtime v3.11.0-11 behavior and MUST be revisited on a
+// runtime bump.
+TEST_CASE("aligned host allocation imports zero-copy on the pinned runtime",
+          "[runtime][import]") {
+  auto bytes = ReadFile(kAddVmfb);
+  auto runtime = IreeRuntime::Load(bytes, kEntryPoint);
+
+  float* lhs =
+      static_cast<float*>(measly::iree::AlignedAlloc(4 * sizeof(float)));
+  for (int i = 0; i < 4; ++i) lhs[i] = static_cast<float>(i);
+  const float rhs[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+
+  std::vector<measly::iree::InputDesc> inputs = {
+      {lhs, 4 * sizeof(float), {4}, kF32},
+      {rhs, sizeof(rhs), {4}, kF32},
+  };
+  auto outputs = runtime->Invoke(inputs);
+
+  auto outcomes = runtime->lastImportOutcomes();
+  REQUIRE(outcomes.size() == 2);
+  // The aligned input must wrap. The stack input's outcome is not this case's
+  // subject (stack alignment is compiler-determined), so only [0] is asserted.
+  REQUIRE(outcomes[0] == IreeRuntime::ImportOutcome::kWrapped);
+
+  measly::iree::AlignedFree(lhs);
+}
+
+// --- W4-adjacent spike (2026-08-04): cached staging + direct output map -------
+
+// Cached staging (StagingMode::kCachedMapWrite / kCachedTransfer): one
+// grow-only staging buffer per input slot, reused across calls. The input
+// pointers are deliberately MISALIGNED (base+1): glibc's alignment for small
+// malloc'd blocks is host-dependent, so a plain malloc can land 64-aligned and
+// import zero-copy — a +1 pointer can never satisfy IREE's 64-byte import
+// alignment, making the kStaged outcome deterministic on every host. Two
+// invokes on the SAME runtime with different values must both produce the
+// golden result: a single shared staging buffer would clobber input 0 with
+// input 1's copy (both inputs stage), yielding 2*rhs instead of lhs+rhs.
+TEST_CASE("cached staging reuses per-slot buffers across invokes", "[runtime][import]") {
+  const auto mode = GENERATE(IreeRuntime::StagingMode::kCachedMapWrite,
+                             IreeRuntime::StagingMode::kCachedTransfer);
+  auto bytes = ReadFile(kAddVmfb);
+  auto runtime = IreeRuntime::Load(bytes, kEntryPoint, "local-sync", {}, mode);
+
+  float* base0 = static_cast<float*>(std::malloc(4 * sizeof(float) + 64));
+  float* base1 = static_cast<float*>(std::malloc(4 * sizeof(float) + 64));
+  float* mis0 = reinterpret_cast<float*>(reinterpret_cast<uintptr_t>(base0) + 1);
+  float* mis1 = reinterpret_cast<float*>(reinterpret_cast<uintptr_t>(base1) + 1);
+
+  const float lhs1[4] = {1.0f, 2.0f, 3.0f, 4.0f};
+  const float rhs1[4] = {10.0f, 20.0f, 30.0f, 40.0f};
+  std::memcpy(mis0, lhs1, sizeof(lhs1));
+  std::memcpy(mis1, rhs1, sizeof(rhs1));
+  std::vector<measly::iree::InputDesc> first = {
+      {mis0, 4 * sizeof(float), {4}, kF32},
+      {mis1, 4 * sizeof(float), {4}, kF32},
+  };
+
+  auto outputs = runtime->Invoke(first);
+  auto outcomes = runtime->lastImportOutcomes();
+  REQUIRE(outcomes.size() == 2);
+  REQUIRE(outcomes[0] == IreeRuntime::ImportOutcome::kStaged);
+  REQUIRE(outcomes[1] == IreeRuntime::ImportOutcome::kStaged);
+  const float* r1 = reinterpret_cast<const float*>(outputs[0].data.data());
+  REQUIRE(r1[0] == 11.0f);
+  REQUIRE(r1[1] == 22.0f);
+  REQUIRE(r1[2] == 33.0f);
+  REQUIRE(r1[3] == 44.0f);
+
+  const float lhs2[4] = {5.0f, 6.0f, 7.0f, 8.0f};
+  const float rhs2[4] = {1.0f, 1.0f, 1.0f, 1.0f};
+  std::memcpy(mis0, lhs2, sizeof(lhs2));
+  std::memcpy(mis1, rhs2, sizeof(rhs2));
+  auto again = runtime->Invoke(first);
+  const float* r2 = reinterpret_cast<const float*>(again[0].data.data());
+  REQUIRE(r2[0] == 6.0f);
+  REQUIRE(r2[1] == 7.0f);
+  REQUIRE(r2[2] == 8.0f);
+  REQUIRE(r2[3] == 9.0f);
+
+  std::free(base0);
+  std::free(base1);
+}
+
+// The grow branch (a slot's buffer is too small for the new input) is not
+// reachable through a successful call on the compiler-free fixtures — every
+// committed model is fixed-shape {4}. It IS reachable through the error path:
+// ImportOrCopy stages the 1024-element inputs (growing both slots to 4 KB)
+// BEFORE iree_runtime_call_invoke rejects the shape mismatch. That exercises
+// the release-then-reallocate ordering and the throw-path release of the views
+// holding the grown buffers; the follow-up golden proves the grown slots are
+// reusable and nothing dangled (ASan would catch a use-after-free).
+TEST_CASE("cached staging grows its buffer through the error path", "[runtime][import]") {
+  auto bytes = ReadFile(kAddVmfb);
+  auto runtime =
+      IreeRuntime::Load(bytes, kEntryPoint, "local-sync", {},
+                        IreeRuntime::StagingMode::kCachedMapWrite);
+
+  const float lhs[4] = {1.0f, 2.0f, 3.0f, 4.0f};
+  const float rhs[4] = {10.0f, 20.0f, 30.0f, 40.0f};
+  std::vector<measly::iree::InputDesc> ok = {
+      {lhs, sizeof(lhs), {4}, kF32},
+      {rhs, sizeof(rhs), {4}, kF32},
+  };
+  auto outputs = runtime->Invoke(ok);
+  REQUIRE(reinterpret_cast<const float*>(outputs[0].data.data())[3] == 44.0f);
+
+  // 1024 f32s = 4 KB per input: the model rejects the shape, but only after
+  // ImportOrCopy has staged both inputs into grown (4 KB) slot buffers.
+  float big0[1024], big1[1024];
+  std::fill(std::begin(big0), std::end(big0), 1.0f);
+  std::fill(std::begin(big1), std::end(big1), 2.0f);
+  std::vector<measly::iree::InputDesc> too_big = {
+      {big0, sizeof(big0), {1024}, kF32},
+      {big1, sizeof(big1), {1024}, kF32},
+  };
+  REQUIRE_THROWS_AS(runtime->Invoke(too_big), std::runtime_error);
+
+  // The grown buffers are still owned by the cache and reused (not shrunk).
+  auto again = runtime->Invoke(ok);
+  const float* r = reinterpret_cast<const float*>(again[0].data.data());
+  REQUIRE(r[0] == 11.0f);
+  REQUIRE(r[3] == 44.0f);
+}
+
+// --- Phase B: view-based output path -----------------------------------------
+
+// InvokeViews + ReadOutput + ReleaseOutputs: the runtime retains the output
+// views between the calls, so the JNI layer can map directly into a JVM-owned
+// buffer. The golden must match the owning Invoke's exactly. Input 0 is
+// AlignedAlloc'd (not a stack array) so the kWrapped outcome assertion is
+// deterministic — stack alignment is compiler-determined (see the aligned
+// host allocation case).
+TEST_CASE("InvokeViews/ReadOutput materializes the golden output", "[runtime][views]") {
+  auto bytes = ReadFile(kAddVmfb);
+  auto runtime = IreeRuntime::Load(bytes, kEntryPoint);
+
+  float* lhs = static_cast<float*>(measly::iree::AlignedAlloc(4 * sizeof(float)));
+  lhs[0] = 1.0f;
+  lhs[1] = 2.0f;
+  lhs[2] = 3.0f;
+  lhs[3] = 4.0f;
+  const float rhs[4] = {10.0f, 20.0f, 30.0f, 40.0f};
+  std::vector<measly::iree::InputDesc> inputs = {
+      {lhs, 4 * sizeof(float), {4}, kF32},
+      {rhs, sizeof(rhs), {4}, kF32},
+  };
+
+  auto layouts = runtime->InvokeViews(inputs);
+  REQUIRE(layouts.size() == 1);
+  REQUIRE(layouts[0].shape == std::vector<int64_t>{4});
+  REQUIRE(layouts[0].nbytes == 4 * sizeof(float));
+  REQUIRE(layouts[0].elementType == kF32);
+
+  float dst[4] = {};
+  runtime->ReadOutput(0, dst);
+  REQUIRE(dst[0] == 11.0f);
+  REQUIRE(dst[1] == 22.0f);
+  REQUIRE(dst[2] == 33.0f);
+  REQUIRE(dst[3] == 44.0f);
+  runtime->ReleaseOutputs();
+
+  // lastImportOutcomes is filled by the view path too.
+  REQUIRE(runtime->lastImportOutcomes()[0] == IreeRuntime::ImportOutcome::kWrapped);
+  measly::iree::AlignedFree(lhs);
+}
+
+TEST_CASE("ReadOutput out of range throws", "[runtime][views]") {
+  auto bytes = ReadFile(kAddVmfb);
+  auto runtime = IreeRuntime::Load(bytes, kEntryPoint);
+
+  const float lhs[4] = {1.0f, 2.0f, 3.0f, 4.0f};
+  const float rhs[4] = {10.0f, 20.0f, 30.0f, 40.0f};
+  std::vector<measly::iree::InputDesc> inputs = {
+      {lhs, sizeof(lhs), {4}, kF32},
+      {rhs, sizeof(rhs), {4}, kF32},
+  };
+  runtime->InvokeViews(inputs);
+  REQUIRE_THROWS_AS(runtime->ReadOutput(1, nullptr), std::out_of_range);
+  runtime->ReleaseOutputs();
+}
+
+// Stale-batch guard: Invoke after InvokeViews (without ReleaseOutputs) must
+// clear the pending views — no leak, no double-release, ASan-clean.
+TEST_CASE("Invoke after InvokeViews releases pending views", "[runtime][views]") {
+  auto bytes = ReadFile(kAddVmfb);
+  auto runtime = IreeRuntime::Load(bytes, kEntryPoint);
+
+  const float lhs[4] = {1.0f, 2.0f, 3.0f, 4.0f};
+  const float rhs[4] = {10.0f, 20.0f, 30.0f, 40.0f};
+  std::vector<measly::iree::InputDesc> inputs = {
+      {lhs, sizeof(lhs), {4}, kF32},
+      {rhs, sizeof(rhs), {4}, kF32},
+  };
+  auto layouts = runtime->InvokeViews(inputs);
+  REQUIRE(layouts.size() == 1);
+
+  // Deliberately no ReleaseOutputs before the owning Invoke.
+  auto outputs = runtime->Invoke(inputs);
+  REQUIRE(outputs.size() == 1);
+  REQUIRE(reinterpret_cast<const float*>(outputs[0].data.data())[0] == 11.0f);
+}
+// Borrow-lifetime proof, same shape as the leak harness's ImportEscapeCheck:
+// the imported input buffer is freed immediately after Invoke returns, then
+// another invoke runs with a fresh input. If anything IREE-side still held a
+// pointer into the freed block, the second invoke would be a use-after-free
+// under ASan — the guarantee the Cleaner-based Java path (§5) relies on: a
+// buffer is only freed when no live call can be using it.
+TEST_CASE("aligned buffer freed after invoke leaves no dangling import",
+          "[runtime][import]") {
+  auto bytes = ReadFile(kAddVmfb);
+  auto runtime = IreeRuntime::Load(bytes, kEntryPoint);
+
+  float* lhs =
+      static_cast<float*>(measly::iree::AlignedAlloc(4 * sizeof(float)));
+  for (int i = 0; i < 4; ++i) lhs[i] = static_cast<float>(i);
+  const float rhs[4] = {1.0f, 1.0f, 1.0f, 1.0f};
+
+  std::vector<measly::iree::InputDesc> inputs = {
+      {lhs, 4 * sizeof(float), {4}, kF32},
+      {rhs, sizeof(rhs), {4}, kF32},
+  };
+  auto outputs = runtime->Invoke(inputs);
+  REQUIRE(runtime->lastImportOutcomes()[0] == IreeRuntime::ImportOutcome::kWrapped);
+
+  measly::iree::AlignedFree(lhs);  // poisoned by ASan from here on
+
+  const float fresh[4] = {2.0f, 2.0f, 2.0f, 2.0f};
+  std::vector<measly::iree::InputDesc> again = {
+      {fresh, sizeof(fresh), {4}, kF32},
+      {rhs, sizeof(rhs), {4}, kF32},
+  };
+  auto outputs2 = runtime->Invoke(again);
+  REQUIRE(outputs2.size() == 1);
 }
 
 // Compiler-free post-link smoke test (Task 2, brief §Step 4): the dist
