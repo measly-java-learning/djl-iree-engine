@@ -23,6 +23,14 @@ case "$(uname -s)" in
   *)            IR_HOST_OS=linux ;;
 esac
 
+# shellcheck source=native/container_env.sh
+. "${REPO_ROOT}/native/container_env.sh"
+if [ "${IR_HOST_OS}" = "linux" ]; then
+  # native/qa is this script's only output tree. Without this, wrapper-driven QA runs leave it
+  # root-owned on the host — the exact gap native/build.sh's trap has always covered for builds.
+  ir_chown_outputs_on_exit native/qa
+fi
+
 if [ "${IR_HOST_OS}" = "windows" ]; then
   command -v cl >/dev/null 2>&1 || { echo "cl.exe not on PATH: activate the VS dev shell first"; exit 1; }
   JOBS="${JOBS:-${NUMBER_OF_PROCESSORS:-4}}"
@@ -60,10 +68,13 @@ else
     *) echo "unsupported arch: $(uname -m)" >&2; exit 1 ;;
   esac
 
-  # QA is the only ASan consumer; install the toolset's ASan runtime here.
-  if command -v dnf >/dev/null 2>&1; then
+  # QA is the only ASan consumer. The pinned toolchain image bakes the runtime in at the base
+  # image's own compiler revision; this dnf call is the fallback for host runs and bare bases.
+  TOOLSET_VER="$(gcc -dumpversion | cut -d. -f1)"
+  if rpm -q --quiet "gcc-toolset-${TOOLSET_VER}-libasan-devel"; then
+    echo "--- ASan runtime already present (gcc-toolset-${TOOLSET_VER}-libasan-devel) ---"
+  elif command -v dnf >/dev/null 2>&1; then
     echo "--- Installing ASan runtime (dnf), may appear to hang ---"
-    TOOLSET_VER="$(gcc -dumpversion | cut -d. -f1)"
     dnf install -y -q "gcc-toolset-${TOOLSET_VER}-libasan-devel" || true
   fi
 

@@ -12,25 +12,21 @@ case "$(uname -s)" in
   *)            IR_HOST_OS=linux ;;
 esac
 
-# Container bind-mount outputs are root-owned on the host; chown them back on exit (any status).
-cleanup() {
-  rc=$?
-  if [ -n "${HOST_UID:-}" ]; then
-    chown -R "${HOST_UID}:${HOST_GID}" "${build_dir}" src/main/resources/native/linux* 2>/dev/null || true
-  fi
-  exit "$rc"
-}
-[ "${IR_HOST_OS}" = "linux" ] && trap cleanup EXIT
-
-
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 build_dir="${here}/build"
 build_type="${BUILD_TYPE:-RelWithDebInfo}"
 
+# shellcheck source=native/container_env.sh
+. "${here}/container_env.sh"
+if [ "${IR_HOST_OS}" = "linux" ]; then
+  ir_chown_outputs_on_exit "${build_dir}" 'src/main/resources/native/linux*'
+fi
+
 
 # This script expects:
-# 1. To be running inside quay.io/pypa/manylinux_2_28_x86_64 (glibc-2.28 floor for the shipped .so)
-# 2. The Corretto RPM downloaded to /workspace
+# 1. To be running inside the pinned toolchain image (docker/<platform>.Dockerfile), which
+#    bakes the glibc-2.28 floor via its manylinux_2_28 base and supplies JAVA_HOME + ninja
+# 2. Failing that, a manylinux_2_28 base with amazon-corretto-linux-jdk.rpm at /workspace
 # The runtime tarball is fetched by CMake during the shim configure (also inside the container,
 # so the fetched runtime is linked on glibc 2.28).
 
@@ -44,16 +40,25 @@ if [ "${IR_HOST_OS}" = "windows" ]; then
     || { echo "JDK headers not found under JAVA_HOME=${JAVA_HOME} (expected include/win32/jni_md.h)"; exit 1; }
   echo "JAVA_HOME=${JAVA_HOME}"
 else
-  echo "--- Extracting Corretto JDK headers (headers-only; we never link libjvm) ---"
-  JDK_EXTRACT=/opt/corretto
-  mkdir -p "${JDK_EXTRACT}"
-  cp /workspace/amazon-corretto-linux-jdk.rpm /tmp/corretto.rpm
-  rpm2archive /tmp/corretto.rpm            # -> /tmp/corretto.rpm.tgz (no cpio in this image)
-  tar -C "${JDK_EXTRACT}" -xzf /tmp/corretto.rpm.tgz
-  JNI_H="$(find "${JDK_EXTRACT}" -path '*/include/jni.h' | head -1)"
-  export JAVA_HOME="${JNI_H%/include/jni.h}"
-  test -f "${JAVA_HOME}/include/linux/jni_md.h" \
-    || { echo "JDK headers not found under JAVA_HOME=${JAVA_HOME}"; exit 1; }
+  # Fast path: the pinned toolchain image (docker/linux-*.Dockerfile) bakes the Corretto 8 headers
+  # in and exports JAVA_HOME, so there is nothing to extract. The fallback below is for running
+  # this script directly on a host, or inside a bare manylinux base — in which case you supply
+  # amazon-corretto-linux-jdk.rpm at the repo root yourself.
+  if [ -n "${JAVA_HOME:-}" ] && [ -f "${JAVA_HOME}/include/linux/jni_md.h" ]; then
+    echo "--- Using the image's baked Corretto JDK headers (headers-only; we never link libjvm) ---"
+    export JAVA_HOME
+  else
+    echo "--- Extracting Corretto JDK headers (headers-only; we never link libjvm) ---"
+    JDK_EXTRACT=/opt/corretto
+    mkdir -p "${JDK_EXTRACT}"
+    cp /workspace/amazon-corretto-linux-jdk.rpm /tmp/corretto.rpm
+    rpm2archive /tmp/corretto.rpm            # -> /tmp/corretto.rpm.tgz (no cpio in this image)
+    tar -C "${JDK_EXTRACT}" -xzf /tmp/corretto.rpm.tgz
+    JNI_H="$(find "${JDK_EXTRACT}" -path '*/include/jni.h' | head -1)"
+    export JAVA_HOME="${JNI_H%/include/jni.h}"
+    test -f "${JAVA_HOME}/include/linux/jni_md.h" \
+      || { echo "JDK headers not found under JAVA_HOME=${JAVA_HOME}"; exit 1; }
+  fi
   echo "JAVA_HOME=${JAVA_HOME}"
 fi
 
@@ -65,7 +70,8 @@ if [ "${IR_HOST_OS}" = "windows" ]; then
 else
   echo "--- Setting up Ninja (the shim configures with -G Ninja) ---"
   export PATH="/opt/python/cp312-cp312/bin:${PATH}"
-  pip install ninja
+  # The pinned image bakes ninja in; only install when running on a bare base or a host.
+  command -v ninja >/dev/null 2>&1 || pip install ninja
   echo "--- Toolchain Versions ---"
   gcc --version; g++ --version; cmake --version; ninja --version
 fi
