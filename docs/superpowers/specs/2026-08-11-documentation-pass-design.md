@@ -57,6 +57,25 @@ yet implemented") reinforces the error and is corrected as part of this pass.
 Windows differs from Linux only in QA depth: no ASan/LSan leak harness and no TSan gate
 there. That is a real distinction the platform table must show rather than hide.
 
+## 3a. Hard constraint: no emoji in Markdown
+
+**`README.md` and `CONTRIBUTING.md` contain no emoji.** This is a requirement, not a
+preference, and it is not negotiable during implementation. No emoji in headings, in
+status markers, in callouts, in tables, or in prose. Emphasis is carried by wording,
+bold, and structure — the same devices the current README already uses well.
+
+The existing `README.md` and `example/README.md` are already emoji-free, so this
+preserves the established convention rather than cleaning up a violation. It extends to
+the other Markdown this pass produces: `docs/observability.md` and `CLAUDE.md`.
+
+**Verification** — this must return no matches across every Markdown file the pass
+touches or creates:
+
+```bash
+grep -nP '[\x{1F300}-\x{1FAFF}\x{2600}-\x{27BF}\x{2B00}-\x{2BFF}\x{FE0F}]' \
+  README.md CONTRIBUTING.md docs/observability.md CLAUDE.md
+```
+
 ## 4. Deliverable 1 — Javadoc
 
 **Bar: useful, not enforced.** Real content on the public API, no doclint gate. Warnings
