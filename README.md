@@ -108,9 +108,10 @@ source tree, no IREE build tree, and no compiler required** to build or test thi
   `generateIreeDataTypes`.
 - Network access, to fetch the pinned `iree-runtime-dist` tarball (SHA256-verified against
   `native/cmake/IreeRuntimePin.cmake`; a tampered hash fails hard at configure time). The
-  native *test* build additionally fetches Catch2 (v3.15.3) via `FetchContent`'s
-  `GIT_REPOSITORY`/`GIT_TAG` (unpinned by hash) — this needs `git` on `PATH` and network
-  access to GitHub as a second host.
+  native *test* build additionally fetches Catch2 (v3.15.3) as a SHA256-pinned tarball — this
+  needs network access to GitHub as a second host, but no `git`. The shipping build
+  (`native/build.sh`, which defaults to `-DIREE_DJL_BUILD_TESTS=OFF`) does not fetch Catch2
+  at all.
 
 `iree-compile` from pip is needed **only** if you want to regenerate the test fixture
 (`add.vmfb`), which is otherwise committed:
