@@ -253,6 +253,12 @@ Java_org_measly_iree_jni_IreeNative_invoke(JNIEnv* env, jclass, jlong handle,
   try {
     jobjectArray result =
         env->NewObjectArray(static_cast<jsize>(layouts.size()), tensor_class, nullptr);
+    if (result == nullptr) {
+      // OOM pending; it propagates on its own once we return. Release the
+      // output views so the runtime is not left holding mapped buffers.
+      runtime->ReleaseOutputs();
+      return nullptr;
+    }
 
     for (size_t i = 0; i < layouts.size(); ++i) {
       const auto& layout = layouts[i];
@@ -281,11 +287,25 @@ Java_org_measly_iree_jni_IreeNative_invoke(JNIEnv* env, jclass, jlong handle,
       runtime->ReadOutput(i, dst);
 
       jlongArray shape = env->NewLongArray(static_cast<jsize>(layout.shape.size()));
+      if (shape == nullptr) {
+        // OOM pending; propagate on return without throwing over it.
+        runtime->ReleaseOutputs();
+        return nullptr;
+      }
+      // SetLongArrayRegion cannot fail once the array exists at the exact
+      // size (it only copies bytes), so no ExceptionCheck is needed here.
       env->SetLongArrayRegion(shape, 0, static_cast<jsize>(layout.shape.size()),
                               reinterpret_cast<const jlong*>(layout.shape.data()));
 
       jobject tensor = env->NewObject(tensor_class, ctor, owned, shape,
                                       static_cast<jint>(layout.elementType));
+      if (tensor == nullptr) {
+        // OOM pending; propagate on return without throwing over it.
+        runtime->ReleaseOutputs();
+        return nullptr;
+      }
+      // SetObjectArrayElement cannot fail either: result is allocated with
+      // exactly layouts.size() slots and i < layouts.size().
       env->SetObjectArrayElement(result, static_cast<jsize>(i), tensor);
       env->DeleteLocalRef(tensor);
       env->DeleteLocalRef(shape);
@@ -310,6 +330,12 @@ Java_org_measly_iree_jni_IreeNative_lastImportOutcomes(JNIEnv* env, jclass,
   }
   auto outcomes = runtime->lastImportOutcomes();
   jintArray result = env->NewIntArray(static_cast<jsize>(outcomes.size()));
+  if (result == nullptr) {
+    // OOM pending; propagates on its own. No views are held here (reads
+    // cached copies), so no ReleaseOutputs. SetIntArrayRegion below cannot
+    // fail once the array exists at the exact size.
+    return nullptr;
+  }
   std::vector<jint> values(outcomes.size());
   for (size_t i = 0; i < outcomes.size(); ++i) {
     values[i] = outcomes[i] == IreeRuntime::ImportOutcome::kWrapped ? 1 : 0;

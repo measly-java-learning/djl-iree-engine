@@ -66,7 +66,7 @@ val ireeElementTypesPath = ireeElementTypesOverride
     ?: ireeMetadataDir.get().file("element_types.json").asFile.path
 
 tasks.test {
-    useJUnitPlatform { excludeTags("leak") }
+    useJUnitPlatform { excludeTags("leak", "oom") }
     jvmArgs("-XX:+HeapDumpOnOutOfMemoryError")
     finalizedBy(tasks.jacocoTestReport)
     // IreeDataTypesTest validates the codegen against the same manifest/mappings it consumed.
@@ -83,6 +83,28 @@ tasks.register<Test>("leakTest") {
     classpath = sourceSets["test"].runtimeClasspath
     useJUnitPlatform { includeTags("leak") }
     jvmArgs("-Xmx256m", "-XX:MaxDirectMemorySize=64m", "-XX:+HeapDumpOnOutOfMemoryError")
+}
+
+// The OOM-contract fixture is a 512 MiB-output splat module (134217728 x f32),
+// compiled at test time by the pinned iree-compile — never committed. The
+// export task and the test task both resolve the fixture dir from the same
+// Gradle-managed location so oomTest is self-contained (see
+// tools/export_oom_fixture.sh).
+val exportOomFixture = tasks.register<Exec>("exportOomFixture") {
+    group = "verification"
+    commandLine("bash", "tools/export_oom_fixture.sh")
+    environment("IREE_FIXTURE_DIR", layout.buildDirectory.dir("oom-models").get().asFile.absolutePath)
+}
+
+tasks.register<Test>("oomTest") {
+    description = "JNI output-marshalling failure-contract tests under a constrained heap."
+    group = "verification"
+    dependsOn(exportOomFixture)
+    testClassesDirs = sourceSets["test"].output.classesDirs
+    classpath = sourceSets["test"].runtimeClasspath
+    useJUnitPlatform { includeTags("oom") }
+    jvmArgs("-Xmx128m")   // deliberately NO HeapDumpOnOutOfMemoryError: the OOM is the expected outcome
+    systemProperty("ireeOomFixture", layout.buildDirectory.dir("oom-models").get().file("splat_134217728.vmfb").asFile.absolutePath)
 }
 
 tasks.jacocoTestReport {
