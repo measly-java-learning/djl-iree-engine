@@ -66,7 +66,7 @@ val ireeElementTypesPath = ireeElementTypesOverride
     ?: ireeMetadataDir.get().file("element_types.json").asFile.path
 
 tasks.test {
-    useJUnitPlatform { excludeTags("leak", "oom") }
+    useJUnitPlatform { excludeTags("leak", "oom", "stress") }
     jvmArgs("-XX:+HeapDumpOnOutOfMemoryError")
     finalizedBy(tasks.jacocoTestReport)
     // IreeDataTypesTest validates the codegen against the same manifest/mappings it consumed.
@@ -83,6 +83,14 @@ tasks.register<Test>("leakTest") {
     classpath = sourceSets["test"].runtimeClasspath
     useJUnitPlatform { includeTags("leak") }
     jvmArgs("-Xmx256m", "-XX:MaxDirectMemorySize=64m", "-XX:+HeapDumpOnOutOfMemoryError")
+}
+
+tasks.register<Test>("stressTest") {
+    description = "Concurrency stress tests for the observability snapshot."
+    group = "verification"
+    testClassesDirs = sourceSets["test"].output.classesDirs
+    classpath = sourceSets["test"].runtimeClasspath
+    useJUnitPlatform { includeTags("stress") }
 }
 
 // The OOM-contract fixture is a 512 MiB-output splat module (134217728 x f32),
