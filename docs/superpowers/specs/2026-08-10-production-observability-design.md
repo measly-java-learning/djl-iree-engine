@@ -319,6 +319,68 @@ device byte gauges report `-1`.
 The new JNI method means `linux-aarch64` and `windows-x86_64` need a rebuild and restage before
 their JVM tests pass, alongside `linux-x86_64`.
 
+## Strengthening the existing leak tests
+
+These counters are a leak oracle, and the existing leak tests have a gap they close. Worth
+building deliberately rather than discovering later.
+
+**Sanitizers detect unreachable memory, not retained memory.** `iree_leak_harness.cpp:47-49`
+states that "a missing release grows RSS and trips LSan," which holds only when the leaked
+allocation becomes unreachable. A HAL buffer still referenced by a live structure, or a grow-only
+cache that never shrinks, is reachable and therefore invisible to LSan. `deviceBytesLive` is a
+*semantic* leak assertion the sanitizers structurally cannot make.
+
+**`LeakStressTest` detects leaks only as OOM.** It loops 2000 iterations under a constrained
+heap/direct-memory budget and fails when something exhausts it. A leak smaller than the budget
+over 2000 iterations passes silently, and a failure names a budget rather than a leak.
+
+**The intra-invoke leak class is masked by the loop shape.** The harness and the stress test both
+cycle load → invoke → close, so tearing down the runtime each iteration frees everything. A
+per-invoke leak *within* one runtime — staging buffer regrowth, `pendingOutputs` not released —
+is diluted by exactly the structure meant to expose leaks. That is the class `ec95080` (cached
+staging, `InvokeViews`/`pendingOutputs`) added risk to.
+
+Three additions:
+
+### A. `aliveRuntimes()`
+
+A file-scope `std::atomic<int64_t>` incremented in `IreeRuntime`'s constructor and decremented in
+its destructor, exposed as `IreeNative.aliveRuntimes()`.
+
+This is a direct copy of the existing `g_aligned_live` / `aliveAlignedBuffers()` pattern
+(`native/core/aligned_alloc.h:31-50`, `iree_djl_jni.cpp:434`) — same shape, same house style,
+same relaxed ordering. Two atomic operations on load and close only; the hot path is untouched.
+
+It lets `LeakStressTest` assert `aliveRuntimes() == 0` after its loop instead of waiting for an
+OOM, converting a late, non-specific failure into an exact one. It also covers the Java-side
+close discipline that this design's registry newly depends on.
+
+### B. An intra-runtime invoke loop in the harness
+
+Add a cycle that loads **one** runtime and invokes it N times, asserting via the facade's
+`Stats()` that `deviceBytesLive` returns to its post-first-invoke baseline and that
+`stagingBytes` plateaus rather than climbing. Needs no new API: the harness links
+`iree_djl_core` directly. Must use a `kCachedMapWrite` load for the `stagingBytes` assertion to
+be meaningful (see *Staging bytes* above). This is the assertion that closes the masked
+intra-invoke gap.
+
+### C. `snapshot()` as leak-test infrastructure
+
+After `LeakStressTest`'s loop, assert `modelsLive == 0` and that the rollup's
+`closedForwardCount` equals the iteration count. Free — it is the API this design already builds
+— and it exercises the `WeakReference`/`ReferenceQueue` reaping path, which otherwise has only
+the single GC unit test behind it.
+
+### Deliberately not added: a process-wide `deviceBytesLive`
+
+Each `RuntimeState` owns its own `DevicePtr`, so the allocator dies with the runtime and there is
+nothing left to query after close. A cross-runtime figure would require a shared instance or a
+statistics-wrapping allocator — a structural change to how devices are created, out of
+proportion to the benefit. Recorded here so it is not re-proposed as an obvious gap.
+
+No USDT/DTrace probes. The existing ASan/LSan/TSan gates plus these counters are the native QA
+surface.
+
 ## Error handling
 
 A monitoring surface must never be the thing that breaks production.
@@ -358,6 +420,10 @@ Two failure modes are deliberately *not* covered here, because failing loudly is
   threads forward on their own models; asserts no exception and no torn values. Plus a dedicated
   close-vs-snapshot loop that exercises `statsLock` — close a model on one thread while another
   polls, repeatedly, under ASan.
+- **Leak (tagged `leak`, via `./gradlew leakTest`):** the additions in *Strengthening the existing
+  leak tests* above — `aliveRuntimes() == 0` and `modelsLive == 0` after `LeakStressTest`'s loop,
+  and the harness's intra-runtime invoke loop asserting `deviceBytesLive` baseline and
+  `stagingBytes` plateau.
 - **Overhead:** a JMH run comparing steady-state MobileNet before and after, via the existing
   `example/src/jmh/java/org/measly/example/MobilenetBenchmark.java`. The counters must not move
   the number. If they do, the design is wrong and we revisit rather than ship a hot-path
