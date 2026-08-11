@@ -30,12 +30,30 @@ import java.util.Map;
  * schemaVersion is validated and range-checked before any other key is read,
  * so a future manifest reports a clean version error, not a type error from
  * further down the document.
+ *
+ * <p>Schema v1, the only version this engine understands: {@code schemaVersion} and {@code
+ * program} are required, with no defaults — {@code schemaVersion} absent is an error, never
+ * assumed to be 1. {@code entryPoint} and {@code parameters} are optional; an absent {@code
+ * parameters} is equivalent to {@code {}}. Fields this class does not read are ignored rather
+ * than rejected, so the format can grow new keys without breaking this engine on an older
+ * manifest written for a newer one.
  */
 public record ModelManifest(int schemaVersion, String program, String entryPoint,
                             Map<String, String> parameters) {
 
     private static final int SUPPORTED_SCHEMA_VERSION = 1;
 
+    /**
+     * Parses and validates a manifest document against the schema described in the class
+     * comment.
+     *
+     * @param json the manifest document text
+     * @param sourceLabel identifies the document in error messages only (e.g. a file path, or
+     *     {@code "<implicit manifest>"} for a bare {@code .vmfb}); carries no other meaning
+     * @return the parsed manifest
+     * @throws ManifestException if {@code json} is not valid JSON, is empty, or violates any
+     *     schema rule — see the class comment for the specific cases
+     */
     public static ModelManifest parse(String json, String sourceLabel) throws ManifestException {
         JsonObject doc;
         try {

@@ -10,11 +10,17 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 
 /**
- * Minimal NDArray backed by a direct ByteBuffer.
+ * A tensor backed by a direct {@link ByteBuffer}, allocated and freed through {@link
+ * IreeNDManager}.
  *
- * <p>Extends NDArrayAdapter so the large NDArray surface throws
- * UnsupportedOperationException by default: this skeleton moves tensors across
- * the boundary and does no maths on the Java side.
+ * <p>Extends {@code NDArrayAdapter} so the large NDArray surface throws {@code
+ * UnsupportedOperationException} by default: this class moves tensor data across the JNI
+ * boundary and does no maths on the Java side.
+ *
+ * <p>Whether an array's buffer imports into IREE zero-copy or is staged is decided at
+ * allocation time by {@link IreeNDManager#allocateDirect(int)} — see that class for the
+ * alignment story. This class only carries the buffer; it does not know which path produced
+ * it.
  */
 public class IreeNDArray extends NDArrayAdapter {
 

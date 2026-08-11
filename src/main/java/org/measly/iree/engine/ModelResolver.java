@@ -27,10 +27,10 @@ import java.util.Map;
  *
  * <p>Containment applies to the {@code .vmfb} and every archive — every asset
  * the manifest names — and is all-or-nothing per manifest. The flag lives on
- * the caller's load options and never in the manifest: a manifest that could
- * self-authorize escape defeats the control. All listed assets are checked
- * eagerly, and no size or content check exists anywhere: a zero-byte asset
- * passes and reaches IREE untouched.
+ * the caller's load options ({@link IreeLoadOptions#allowUnsafePaths()}) and never in the
+ * {@link ModelManifest}: a manifest that could self-authorize escape defeats the control. All
+ * listed assets are checked eagerly, and no size or content check exists anywhere: a zero-byte
+ * asset passes and reaches IREE untouched.
  */
 public final class ModelResolver {
 
@@ -39,6 +39,37 @@ public final class ModelResolver {
 
     private ModelResolver() {}
 
+    /**
+     * Resolves {@code Model.load}'s {@code modelPath} to a concrete {@code .vmfb} and its
+     * parameter archives, in one of three accepted shapes:
+     *
+     * <ul>
+     *   <li>a regular file — parsed as a manifest regardless of its name;
+     *   <li>a directory containing {@code djl-iree-model.json} — that file is parsed;
+     *   <li>a directory with no manifest but a {@code <prefix>.vmfb} — treated as an implicit,
+     *       zero-parameter, schema-version-1 manifest naming just that program.
+     * </ul>
+     *
+     * <p>A directory with neither throws {@link java.io.FileNotFoundException} naming the
+     * directory and both things it looked for. Every asset the resolved manifest names is
+     * checked for containment inside the manifest's own directory on its resolved real path
+     * (so a symlink escape is caught, not just a textual one), unless {@code
+     * options.allowUnsafePaths()} is set.
+     *
+     * @param modelPath a manifest file, a directory holding one, or a directory holding a bare
+     *     {@code .vmfb}
+     * @param prefix the model name prefix used to look for {@code <prefix>.vmfb} in the
+     *     implicit-manifest case
+     * @param options load options; only {@link IreeLoadOptions#allowUnsafePaths()} affects
+     *     resolution
+     * @return the resolved {@code .vmfb} path and parameter bindings
+     * @throws java.io.FileNotFoundException if {@code modelPath} is neither a file nor a
+     *     directory, if a directory has neither manifest form, or if a referenced asset is
+     *     missing on disk
+     * @throws ManifestException if the manifest document fails schema validation, or if a
+     *     referenced asset resolves outside the manifest's directory and {@code
+     *     allowUnsafePaths} is not set
+     */
     public static ResolvedModel resolve(Path modelPath, String prefix, IreeLoadOptions options)
             throws IOException {
         Path manifestFile;
