@@ -643,3 +643,55 @@ TEST_CASE("AliveRuntimeCount does not count a failed load") {
                     std::runtime_error);
   REQUIRE(measly::iree::AliveRuntimeCount() == baseline);
 }
+
+TEST_CASE("Stats replaces rather than accumulates a regrown staging slot") {
+  auto vmfb = ReadFile(kAddVmfb);
+  auto runtime = IreeRuntime::Load(vmfb, kEntryPoint, "local-sync",
+                                   std::span<const measly::iree::ParameterScope>{},
+                                   IreeRuntime::StagingMode::kCachedMapWrite);
+
+  // Misaligned so both inputs take the staging fallback.
+  auto* block = static_cast<std::byte*>(measly::iree::AlignedAlloc(1024));
+  auto* lhs = reinterpret_cast<float*>(block + 4);
+  auto* rhs = reinterpret_cast<float*>(block + 512 + 4);
+  for (int i = 0; i < 8; ++i) {
+    lhs[i] = 1.0f;
+    rhs[i] = 2.0f;
+  }
+
+  std::vector<measly::iree::InputDesc> small = {
+      {lhs, 4 * sizeof(float), {4}, kF32},
+      {rhs, 4 * sizeof(float), {4}, kF32},
+  };
+  (void)runtime->Invoke(small);
+  const uint64_t afterSmall = runtime->Stats().stagingBytes;
+  REQUIRE(afterSmall == 2 * 4 * sizeof(float));
+
+  // Twice the bytes into the same two slots. ImportOrCopy stages BEFORE the
+  // call runs, so the slots regrow even though the module's static 4xf32
+  // signature then rejects the invoke — which is exactly the accounting path
+  // worth pinning: a regrown slot must REPLACE its old contribution to the
+  // running sum, not add to it, and a slot must not be double-counted when the
+  // call it was staged for throws.
+  std::vector<measly::iree::InputDesc> large = {
+      {lhs, 8 * sizeof(float), {8}, kF32},
+      {rhs, 8 * sizeof(float), {8}, kF32},
+  };
+  try {
+    (void)runtime->Invoke(large);
+  } catch (const std::runtime_error&) {
+    // Shape mismatch is expected and irrelevant here; the staging already happened.
+  }
+
+  // 64, not 32 + 64: the old contribution is retired before the new one lands.
+  REQUIRE(runtime->Stats().stagingBytes == 2 * 8 * sizeof(float));
+
+  // And shrinking back does not shrink the footprint — the buffers are grow-only.
+  try {
+    (void)runtime->Invoke(small);
+  } catch (const std::runtime_error&) {
+  }
+  REQUIRE(runtime->Stats().stagingBytes == 2 * 8 * sizeof(float));
+
+  measly::iree::AlignedFree(block);
+}

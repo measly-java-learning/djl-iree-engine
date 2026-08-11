@@ -41,11 +41,9 @@ struct OutputLayout {
 // Cold-path observability read. Never called from Invoke/InvokeViews.
 //
 // stagingBytes is the sum of the grow-only per-slot staging buffers the cached
-// staging modes retain. It is exact while the runtime is quiescent; a poll that
-// races RunCall's first-time growth of the per-slot table may read a
-// partially-resized table and report an approximate value for that one poll.
-// The table is grow-only and bounded by the input-slot count, and the next poll
-// self-corrects — so stagingBytes never drifts. It is structurally 0 under
+// staging modes retain. It is exact at all times, including during a concurrent
+// call: ImportOrCopy maintains it as a single atomic running sum, so a poll
+// never observes the per-slot table mid-resize. It is structurally 0 under
 // kAllocatePerCall, which retains none.
 //
 // deviceBytes* come from IREE's HAL allocator statistics. Each runtime owns its
@@ -142,9 +140,8 @@ class IreeRuntime {
 
   // Cumulative, monotonic, per-runtime. Unlike lastImportOutcomes() these have
   // no validity window: they are safe to read at any time between construction
-  // and destruction. wrappedImports/stagedImports are exact; stagingBytes is
-  // exact while the runtime is quiescent — see RuntimeStats for the one
-  // transient a poll can observe during concurrent first-time growth.
+  // and destruction, including concurrently with a call in flight. Every figure
+  // is exact — see RuntimeStats.
   RuntimeStats Stats() const;
 
   explicit IreeRuntime(std::unique_ptr<RuntimeState> state);

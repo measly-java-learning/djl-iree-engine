@@ -59,6 +59,16 @@ struct RuntimeState {
   std::vector<BufferPtr> cachedStaging;
   std::vector<iree_device_size_t> cachedStagingSizes;
 
+  // Running sum of cachedStagingSizes, maintained alongside it in ImportOrCopy.
+  // Stats() reads THIS rather than iterating the vector, which would be a data
+  // race: the vector reallocates on resize() and its elements are written on
+  // every slot regrowth, both from the model's thread, while a monitoring poll
+  // reads from another. Iterating it was undefined behavior, not an approximate
+  // read. One relaxed fetch_add on the rare growth path costs less than the
+  // loop it replaces, so the hot path is not merely unharmed but shorter, and
+  // stagingBytes is now exact rather than exact-while-quiescent.
+  std::atomic<uint64_t> stagingBytesTotal{0};
+
   // Output views retained by InvokeViews() until ReleaseOutputs(). Invoke()
   // and InvokeViews() both clear this first (stale-batch guard), so a caller
   // that forgets ReleaseOutputs leaks nothing and double-release is impossible.
@@ -238,19 +248,10 @@ RuntimeStats IreeRuntime::Stats() const {
   out.wrappedImports = state_->wrappedImports.load(std::memory_order_relaxed);
   out.stagedImports = state_->stagedImports.load(std::memory_order_relaxed);
 
-  // Deliberately lock-free — RunCall is the hot path and the design forbids a
-  // lock there. cachedStagingSizes is grow-only and bounded by the input-slot
-  // count, so the only window is a poll that races a first-time resize: it may
-  // read a partially-resized table and report a stagingBytes that is
-  // approximate for that one poll. The next poll sees the settled table, so
-  // the value is exact whenever the runtime is quiescent and self-corrects
-  // within one poll of any growth — the same class of transient the Java side
-  // already tolerates.
-  uint64_t staging = 0;
-  for (iree_device_size_t size : state_->cachedStagingSizes) {
-    staging += static_cast<uint64_t>(size);
-  }
-  out.stagingBytes = staging;
+  // Lock-free and exact: one relaxed load of the running sum ImportOrCopy
+  // maintains. Reading state_->cachedStagingSizes directly would race the
+  // model's thread — see RuntimeState::stagingBytesTotal.
+  out.stagingBytes = state_->stagingBytesTotal.load(std::memory_order_relaxed);
 
 #if IREE_STATISTICS_ENABLE
   out.statisticsAvailable = true;
@@ -352,13 +353,27 @@ BufferViewPtr ImportOrCopy(iree_hal_device_t* device,
     auto& cached = state.cachedStaging[input_index];
     auto& cachedSize = state.cachedStagingSizes[input_index];
     if (cached == nullptr || cachedSize < input.nbytes) {
+      // Retire the old buffer and its contribution to the running sum together,
+      // BEFORE attempting the new allocation. IREE_CHECK_OR_THROW below can
+      // leave this slot empty, and dropping the contribution first means the
+      // sum then reports what is actually allocated (nothing for this slot)
+      // rather than a buffer that has already been freed. It also keeps the
+      // subtraction from ever underflowing: whenever cachedSize is non-zero the
+      // sum includes it. Relaxed on both, like the import counters — a
+      // standalone cumulative figure with no ordering constraint against the
+      // reader.
       cached.reset();
+      state.stagingBytesTotal.fetch_sub(static_cast<uint64_t>(cachedSize),
+                                        std::memory_order_relaxed);
+      cachedSize = 0;
       iree_hal_buffer_t* raw_buffer = nullptr;
       IREE_CHECK_OR_THROW(iree_hal_allocator_allocate_buffer(
           allocator, params, static_cast<iree_device_size_t>(input.nbytes),
           &raw_buffer));
       cached.reset(raw_buffer);
       cachedSize = static_cast<iree_device_size_t>(input.nbytes);
+      state.stagingBytesTotal.fetch_add(static_cast<uint64_t>(cachedSize),
+                                        std::memory_order_relaxed);
     }
     if (state.stagingMode == IreeRuntime::StagingMode::kCachedMapWrite) {
       IREE_CHECK_OR_THROW(iree_hal_buffer_map_write(
