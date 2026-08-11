@@ -64,6 +64,7 @@ public class IreeModel extends BaseModel {
                 new IreeModelCounters(modelName, opts.device(), entryPoint, count, loadNanos);
         symbolBlock.attachCounters(counters);
         IreeEngineStats.register(handle, symbolBlock, counters);
+        IreeEngineStats.registerMBeanOnce();
         block = symbolBlock;
     }
 

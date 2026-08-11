@@ -1,5 +1,6 @@
 package org.measly.iree.engine;
 
+import java.lang.management.ManagementFactory;
 import java.lang.ref.Reference;
 import java.lang.ref.ReferenceQueue;
 import java.lang.ref.WeakReference;
@@ -8,7 +9,13 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
+import javax.management.InstanceNotFoundException;
+import javax.management.MBeanServer;
+import javax.management.ObjectName;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * Production monitoring surface for the IREE engine.
@@ -26,6 +33,15 @@ public final class IreeEngineStats {
 
     /** The JMX object name this engine registers under. */
     public static final String OBJECT_NAME = "org.measly.iree:type=IreeEngineStats";
+
+    private static final Logger logger = LoggerFactory.getLogger(IreeEngineStats.class);
+
+    /** The property that disables auto-registration. */
+    public static final String JMX_ENABLED_PROPERTY = "ai.djl.iree.jmx_enabled";
+
+    // Guards the one-shot auto-registration attempt. A failed attempt is not retried: a
+    // per-load retry would log on every load and re-run a failure we already reported.
+    private static final AtomicBoolean JMX_ATTEMPTED = new AtomicBoolean();
 
     private static final String UNKNOWN = "unknown";
 
@@ -192,16 +208,106 @@ public final class IreeEngineStats {
         }
     }
 
-    /** JMX registration state. Bodies are filled in when JMX lands; see Task 8. */
+    /** JMX registration state, reported in every snapshot. */
     static final class IreeJmx {
+        private static volatile String status = "DISABLED";
+        private static volatile String error = "";
+
         private IreeJmx() {}
 
         static String status() {
-            return "DISABLED";
+            return status;
         }
 
         static String error() {
-            return "";
+            return error;
         }
+
+        static void registered() {
+            status = "REGISTERED";
+            error = "";
+        }
+
+        static void failed(String reason) {
+            status = "FAILED";
+            error = reason == null ? "" : reason;
+        }
+
+        static void disabled() {
+            status = "DISABLED";
+            error = "";
+        }
+    }
+
+    /** The MXBean implementation. Held only by the platform MBean server. */
+    private static final class Bean implements IreeEngineStatsMXBean {
+        @Override
+        public IreeStatsSnapshot getSnapshot() {
+            return IreeEngineStats.snapshot();
+        }
+    }
+
+    /**
+     * Registers the MXBean on the platform MBean server. Idempotent: a second call on an
+     * already-registered name is a no-op rather than an error.
+     *
+     * <p>Never throws. A failure — name collision, {@code SecurityManager}, a restricted
+     * container — logs one warning and sets {@code jmxStatus=FAILED} in the snapshot.
+     */
+    public static void registerMBean() {
+        try {
+            MBeanServer server = ManagementFactory.getPlatformMBeanServer();
+            ObjectName objectName = new ObjectName(OBJECT_NAME);
+            if (server.isRegistered(objectName)) {
+                IreeJmx.registered();
+                return;
+            }
+            server.registerMBean(new Bean(), objectName);
+            IreeJmx.registered();
+        } catch (Exception e) {
+            IreeJmx.failed(e.toString());
+            logger.warn(
+                    "IREE engine JMX registration failed for {}; snapshot() is unaffected.",
+                    OBJECT_NAME,
+                    e);
+        }
+    }
+
+    /** Removes the MXBean if registered. Never throws. */
+    public static void unregisterMBean() {
+        try {
+            MBeanServer server = ManagementFactory.getPlatformMBeanServer();
+            ObjectName objectName = new ObjectName(OBJECT_NAME);
+            if (server.isRegistered(objectName)) {
+                server.unregisterMBean(objectName);
+            }
+            IreeJmx.disabled();
+        } catch (InstanceNotFoundException e) {
+            IreeJmx.disabled(); // raced with another unregister; nothing to do
+        } catch (Exception e) {
+            logger.warn("IREE engine JMX unregistration failed for {}", OBJECT_NAME, e);
+        }
+    }
+
+    /**
+     * One-shot auto-registration, called from {@link IreeModel#load}. Opt out with
+     * {@code -Dai.djl.iree.jmx_enabled=false}. Never retried and never fails a load.
+     */
+    static void registerMBeanOnce() {
+        if (!JMX_ATTEMPTED.compareAndSet(false, true)) {
+            return;
+        }
+        String enabled;
+        try {
+            enabled = System.getProperty(JMX_ENABLED_PROPERTY);
+        } catch (SecurityException e) {
+            IreeJmx.disabled();
+            return; // unreadable property under a restrictive SecurityManager: stay off
+        }
+        if ("false".equalsIgnoreCase(enabled)) {
+            IreeJmx.disabled();
+            return;
+        }
+        registerMBean();
     }
 }
