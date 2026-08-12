@@ -254,9 +254,15 @@ target_compile_definitions(iree_leak_harness PRIVATE
 add_executable(iree_copy_bench bench/iree_copy_bench.cpp)
 target_link_libraries(iree_copy_bench PRIVATE iree_djl_core)
 
-# JNI shim (Task 7): thin marshalling layer over iree_djl_core. Skipped under any
-# sanitizer: sanitized builds are QA-only, never shipped, and JVM-free — so they must
-# not require a JDK. The Catch2 units and the leak harness link iree_djl_core directly.
+# JNI shim (Task 7): thin marshalling layer over iree_djl_core. Skipped under ASan and
+# TSan: those builds are QA-only, never shipped, and JVM-free -- so they must not require
+# a JDK. The Catch2 units and the leak harness link iree_djl_core directly.
+#
+# UBSan is the exception, and deliberately so. It needs no runtime preload, and
+# -static-libubsan folds its runtime into the .so, so a stock JVM can dlopen the result
+# with no LD_PRELOAD and no "ASan runtime does not come first". That makes the shim --
+# where issues 15, 16 and 17 all lived -- reachable by a sanitizer for the first time.
+# native/ubsan_gate.sh builds exactly this configuration and drives it with the JVM suite.
 if(NOT IREE_DJL_SANITIZE AND NOT IREE_DJL_TSAN)
   find_package(JNI REQUIRED)
   add_library(iree_djl SHARED jni/iree_djl_jni.cpp)
@@ -265,5 +271,10 @@ if(NOT IREE_DJL_SANITIZE AND NOT IREE_DJL_TSAN)
   # Hide IREE's symbols so they cannot collide with anything else in the JVM.
   if(NOT WIN32)
     target_link_options(iree_djl PRIVATE -Wl,--exclude-libs,ALL)
+  endif()
+  # Statically link the UBSan runtime so the JVM needs no preload. Without this the .so
+  # carries an undefined dependency on libubsan.so and System.load fails.
+  if(IREE_DJL_UBSAN)
+    target_link_options(iree_djl PRIVATE -static-libubsan)
   endif()
 endif()
