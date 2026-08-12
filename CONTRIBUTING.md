@@ -68,9 +68,9 @@ The wrapper picks the image from `uname -m` (`docker/linux-x86_64.Dockerfile` or
 `docker/linux-aarch64.Dockerfile`) and builds it first; Docker's layer cache makes that a
 near-instant no-op after the first run. The images carry the Corretto 8 JNI headers, so the
 shipped library is always compiled against the JDK 8 floor whatever the host has. The same
-Dockerfiles back the CI matrix (`.github/workflows/warm-build-image.yml`). `build.sh` and
-`build_qa.sh` chown their outputs back to you on exit; other `native/` scripts run through the
-wrapper do not yet, and leave root-owned directories behind.
+Dockerfiles back the CI matrix (`.github/workflows/warm-build-image.yml`). `build.sh`,
+`build_qa.sh` and `ubsan_gate.sh` chown their outputs back to you on exit; other `native/`
+scripts run through the wrapper do not yet, and leave root-owned directories behind.
 
 Windows x86_64 is built in CI only (`build-iree-shim-windows` in
 `.github/workflows/native-build-job.yml`, on `windows-2022`, under an MSVC dev shell); there is

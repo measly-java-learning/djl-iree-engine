@@ -31,6 +31,19 @@ cd "${REPO_ROOT}"
 BUILD_DIR="${BUILD_DIR:-native/ubsan}"
 JOBS="${JOBS:-$(nproc)}"
 
+# The build phase runs as root under native/local_build_wrapper.sh, so without this the
+# tree comes back root-owned and the NEXT run's `rm -rf "${BUILD_DIR}"` below dies with a
+# bare "Permission denied" that names neither the container nor the cause. That is not
+# hypothetical: it is exactly what happened between the container build phase and the
+# following host run during this gate's own bring-up.
+#
+# The trap is a no-op outside the container -- ir_chown_cleanup only acts when HOST_UID is
+# set, which only the wrapper does -- so registering it unconditionally is safe. No OS fork
+# here, unlike build_qa.sh: this script is Linux-only by construction.
+# shellcheck source=native/container_env.sh
+. "${REPO_ROOT}/native/container_env.sh"
+ir_chown_outputs_on_exit "${BUILD_DIR}"
+
 # Two phases, because they need different environments and cannot share one.
 #
 #   build  needs gcc + jni.h. Runs happily in the pinned container, which is where the

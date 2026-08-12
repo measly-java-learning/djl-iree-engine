@@ -11,7 +11,7 @@ set -ex # Fail on error, print commands to log
 #   ITERS=2000 ./native/local_build_wrapper.sh native/build_qa.sh
 #   ./native/local_build_wrapper.sh native/build_variants.sh
 #   IR_MEMORY=12g ./native/local_build_wrapper.sh native/ubsan_gate.sh   # raise the cap
-# build.sh and build_qa.sh both chown their outputs back to you on exit (see
+# build.sh, build_qa.sh and ubsan_gate.sh all chown their outputs back to you on exit (see
 # native/container_env.sh). Other native/ scripts run through this wrapper do not yet, and will
 # leave root-owned dirs behind.
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
