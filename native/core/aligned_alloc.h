@@ -30,6 +30,12 @@ inline constexpr size_t kBufferAlignment = 64;
 // memory pressure — is the leak signal).
 inline std::atomic<int64_t> g_aligned_live{0};
 
+// Ownership/lifetime: returns a pointer the caller owns and must eventually
+// pass to AlignedFree — never to free() or plain operator delete, since it
+// was obtained from the aligned overload of operator new and a mismatched
+// deallocator is undefined behavior. Between AlignedAlloc and AlignedFree the
+// caller is free to write into the buffer (that is the whole point: this is
+// how the engine hands the caller a buffer that will import zero-copy).
 inline void* AlignedAlloc(size_t n) {
   // If operator new throws (std::bad_alloc), the counter is not incremented:
   // the caller sees the exception and there is nothing live to count.
@@ -38,6 +44,9 @@ inline void* AlignedAlloc(size_t n) {
   return p;
 }
 
+// Ownership/lifetime: consumes exactly one pointer previously returned by
+// AlignedAlloc; p must not be used again after this call. Must be paired with
+// AlignedAlloc, never called on memory from a different allocator.
 inline void AlignedFree(void* p) {
   if (p == nullptr) return;
   // Alignment must match the allocation exactly — kBufferAlignment is fixed,

@@ -11,6 +11,16 @@ namespace measly::iree {
 
 // One owning wrapper per refcounted IREE handle type. Construction acquires,
 // destruction releases, exactly once. No raw handle escapes the facade.
+//
+// Each *Ptr alias below is the ONLY legal owner of its handle: once a raw
+// pointer from IREE is wrapped, ownership belongs to that unique_ptr and
+// nothing outside iree_runtime.cpp should hold the raw pointer independently.
+// The deleters call IREE's `_release`, which decrements a refcount rather than
+// unconditionally freeing -- IREE handles are refcounted, and other internal
+// IREE structures may hold their own references (e.g. a session retains the
+// modules appended to it). So wrapping a handle in one of these unique_ptrs
+// transfers exactly the one reference the creating call returned; it does not
+// assert the wrapper is the last or only reference in existence.
 struct InstanceDeleter {
   void operator()(iree_runtime_instance_t* p) const { iree_runtime_instance_release(p); }
 };
@@ -55,6 +65,13 @@ using VmModulePtr = std::unique_ptr<iree_vm_module_t, VmModuleDeleter>;
 // iree_runtime_call_t is a VALUE type, not a refcounted handle: it is
 // initialized in place and torn down with deinitialize (there is no
 // iree_runtime_call_release). So it gets a scope guard, not a unique_ptr.
+//
+// mark_initialized() contract: the guard only calls deinitialize if it was
+// told initialization succeeded. iree_runtime_call_initialize_by_name can
+// fail partway through, and the value in call_ is then not in a state
+// deinitialize is safe to run against -- so a failed initialize must NOT
+// call mark_initialized(), and the destructor's `if (initialized_)` check
+// exists precisely to skip deinitialize on that failure path.
 class CallGuard {
  public:
   CallGuard() = default;
