@@ -6,10 +6,11 @@ apply at runtime.
 
 ## Prerequisites
 
-The engine consumes the published `iree-runtime-dist` artifact pinned in
-`native/cmake/IreeRuntimePin.cmake` — a hash-pinned tarball
-of 198 static archives, fetched and verified by CMake at configure time. There is **no IREE
-source tree, no IREE build tree, and no compiler required** to build or test this engine:
+The engine links against the published `iree-runtime-dist` artifact pinned in
+`native/cmake/IreeRuntimePin.cmake` — a hash-pinned tarball of 198 static archives, fetched and
+verified by CMake at configure time. **Nothing here builds IREE itself**: there is no IREE
+source tree, no IREE build tree, and `iree-compile` is not needed (see below for the one
+exception). You do need an ordinary C++ toolchain, for the JNI shim in `native/`:
 
 - JDK 17 (e.g. `/usr/lib/jvm/zulu-17-amd64`) — set `JAVA_HOME` to it.
 - CMake, Ninja, and a C++20 (gcc/clang) compiler.
@@ -19,7 +20,7 @@ source tree, no IREE build tree, and no compiler required** to build or test thi
   `generateIreeDataTypes`.
 - Network access, to fetch the pinned `iree-runtime-dist` tarball (SHA256-verified against
   `native/cmake/IreeRuntimePin.cmake`; a tampered hash fails hard at configure time). The
-  native *test* build additionally fetches Catch2 (v3.15.3) as a SHA256-pinned tarball — this
+  native *test* build additionally fetches Catch2 as a SHA256-pinned tarball — this
   needs network access to GitHub as a second host, but no `git`. The shipping build
   (`native/build.sh`, which defaults to `-DIREE_DJL_BUILD_TESTS=OFF`) does not fetch Catch2
   at all.
@@ -39,14 +40,12 @@ linkable library, which is exactly why the dist artifact exists.
 JAVA_HOME=/usr/lib/jvm/zulu-17-amd64 ./gradlew test    # JVM tests
 ```
 
-The JVM suite spans 15 classes under `src/test/java/org/measly/iree/`. The core functional
-path: `IreeNativeTest` (JNI boundary, including the scale/scale2 parameter-archive loads),
-`AddModelIT` (the implicit bare-`.vmfb` door), `ModelManifestTest` (schema rules),
-`ModelResolverTest` (front doors + containment), and `ScaleModelIT` (manifest directory end to
-end → `[2, 4, 6, 8]`). Alongside it: the observability suites (`IreeEngineStatsTest`,
-`IreeEngineStatsJmxIT`, `StatsConcurrencyIT`, `IreeModelCountersTest`), `LibUtilsTest`,
-`LeakStressTest`, `IreeDataTypesTest`, and the JNI edge-case suites `IreeNativeArityTest`,
-`IreeNativeNullArgsTest`, and `IreeNativeOomTest`.
+The JVM suite lives under `src/test/java/org/measly/iree/`. If you are orienting yourself, the
+core functional path is `IreeNativeTest` (JNI boundary, including the scale/scale2
+parameter-archive loads), `AddModelIT` (the implicit bare-`.vmfb` door), `ModelManifestTest`
+(schema rules), `ModelResolverTest` (front doors + containment), and `ScaleModelIT` (manifest
+directory end to end → `[2, 4, 6, 8]`). The rest cover observability, the JNI edge cases, and
+leak stress.
 
 ## Container build
 
@@ -114,10 +113,10 @@ clangd infers their flags from `core/iree_runtime.cpp`, which includes all three
 ## Native QA
 
 ```bash
-# Catch2 units: iree_runtime_test (28 cases) and iree_params_test (9 cases). native/build.sh
-# defaults to -DIREE_DJL_BUILD_TESTS=OFF — the shipping build stages only the .so, so it no
-# longer clones and compiles Catch2. Opt back in to get the test binaries in native/build, or
-# just run ./native/build_qa.sh, which builds them either way (into native/qa instead).
+# Catch2 units: iree_runtime_test and iree_params_test. native/build.sh defaults to
+# -DIREE_DJL_BUILD_TESTS=OFF — the shipping build stages only the .so, so it does not fetch
+# or compile Catch2. Opt back in to get the test binaries in native/build, or just run
+# ./native/build_qa.sh, which builds them either way (into native/qa instead).
 ./native/build.sh -DIREE_DJL_BUILD_TESTS=ON
 ./native/build/iree_runtime_test
 
