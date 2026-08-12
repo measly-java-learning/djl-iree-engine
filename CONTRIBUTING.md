@@ -7,8 +7,8 @@ apply at runtime.
 ## Prerequisites
 
 The engine links against the published `iree-runtime-dist` artifact pinned in
-`native/cmake/IreeRuntimePin.cmake` — a hash-pinned tarball of 198 static archives, fetched and
-verified by CMake at configure time. **Nothing here builds IREE itself**: there is no IREE
+`native/cmake/IreeRuntimePin.cmake` — a hash-pinned tarball of prebuilt static archives, fetched
+and verified by CMake at configure time. **Nothing here builds IREE itself**: there is no IREE
 source tree, no IREE build tree, and `iree-compile` is not needed (see below for the one
 exception). You do need an ordinary C++ toolchain, for the JNI shim in `native/`:
 
