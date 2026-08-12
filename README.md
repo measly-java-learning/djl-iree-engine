@@ -174,12 +174,6 @@ declare them yourself, as the quickstart does.
 | `linux-aarch64` | `libiree_djl.so` | `local-sync` (default), `local-task` | Catch2 + ASan/LSan leak harness |
 | `windows-x86_64` | `iree_djl.dll` | `local-sync` (default), `local-task` | Catch2 + static-CRT assertion |
 
-All three are built, QA'd, and published by CI (`.github/workflows/native-build-job.yml`); a
-release cannot silently omit one, because each classifier jar fails the build if its library or
-license notices are missing. Windows differs from the Linux rows only in QA depth: there is no
-ASan/LSan leak harness and no TSan gate there. The QA commands themselves are described in
-[`CONTRIBUTING.md`](CONTRIBUTING.md).
-
 The native library ships in a per-platform classifier jar (`<artifact>-<platform>.jar`) and is
 extracted on first load into a **content-addressed cache**, keyed by the SHA-256 of the library
 bytes: `%LOCALAPPDATA%\iree-djl` on Windows, else `$XDG_CACHE_HOME/iree-djl` if that variable is
@@ -284,10 +278,6 @@ every call, because IREE imports a host buffer zero-copy only at 64-byte alignme
 `ByteBuffer.allocateDirect`; anything unaligned stages a copy into a per-runtime staging buffer
 that is reused across calls. Set `-Diree.engine.alignedBuffers=true` and `NDManager.create`
 hands back 64-byte-aligned buffers instead, which import with no copy at all.
-
-The flag is off by default because it changes the contract, not because it is unfinished: you
-write into the buffer the engine gives you rather than bringing your own direct `ByteBuffer`.
-It is read per allocation, so it can be toggled around a measurement.
 
 Whether the copy is worth eliminating is a property of your workload, and the honest answer is
 that you have to measure it. The smaller the model, the more the fixed copy cost matters
