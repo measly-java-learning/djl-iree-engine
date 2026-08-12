@@ -68,19 +68,25 @@ else
     *) echo "unsupported arch: $(uname -m)" >&2; exit 1 ;;
   esac
 
-  # QA is the only ASan consumer. The pinned toolchain image bakes the runtime in at the base
-  # image's own compiler revision; this dnf call is the fallback for host runs and bare bases.
+  # QA is the only ASan/UBSan consumer. The pinned toolchain image bakes the runtimes in at
+  # the base image's own compiler revision; this dnf call is the fallback for host runs and
+  # bare bases.
   TOOLSET_VER="$(gcc -dumpversion | cut -d. -f1)"
-  if rpm -q --quiet "gcc-toolset-${TOOLSET_VER}-libasan-devel"; then
-    echo "--- ASan runtime already present (gcc-toolset-${TOOLSET_VER}-libasan-devel) ---"
-  elif command -v dnf >/dev/null 2>&1; then
-    echo "--- Installing ASan runtime (dnf), may appear to hang ---"
-    dnf install -y -q "gcc-toolset-${TOOLSET_VER}-libasan-devel" || true
-  fi
+  for _san in asan ubsan; do
+    if rpm -q --quiet "gcc-toolset-${TOOLSET_VER}-lib${_san}-devel"; then
+      echo "--- ${_san} runtime already present (gcc-toolset-${TOOLSET_VER}-lib${_san}-devel) ---"
+    elif command -v dnf >/dev/null 2>&1; then
+      echo "--- Installing ${_san} runtime (dnf), may appear to hang ---"
+      dnf install -y -q "gcc-toolset-${TOOLSET_VER}-lib${_san}-devel" || true
+    fi
+  done
 
   JOBS="${JOBS:-$(nproc)}"
   rm -rf native/qa
-  cmake -B native/qa -S native -G "Unix Makefiles" -DIREE_DJL_SANITIZE=ON \
+  # UBSan's default is print-and-continue; -fno-sanitize-recover (set in
+  # native/CMakeLists.txt) makes it abort, and these make the abort legible.
+  export UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1
+  cmake -B native/qa -S native -G "Unix Makefiles" -DIREE_DJL_SANITIZE=ON -DIREE_DJL_UBSAN=ON \
     -DCMAKE_BUILD_TYPE=Debug \
     -DCMAKE_CXX_FLAGS="-fsanitize=address -fno-omit-frame-pointer -g" \
     -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address"
