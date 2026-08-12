@@ -440,7 +440,9 @@ Linux only: MSVC has no UBSan."
 3. `build.sh:74` runs `command -v ninja || pip install ninja` — unpinned, against an image that pins `ninja==1.13.0`.
 4. Nothing distinguishes "running in the pinned image" from "running on a bare host", so a fallback meant for host runs silently becomes drift inside the container.
 
-**The fix**: bake the runtime in with the same NEVRA discipline, have the image announce its own pins, and make the scripts *assert* inside the image and only install outside it — loudly, and pinned.
+5. The host branch is **dead code**. Both the workstation and the GitHub runner are Ubuntu, where `rpm` is command-not-found and `command -v dnf` is false — so under `set -euo pipefail` the loop falls through silently, installing nothing and printing nothing. The "fallback for host runs" has never run on the only host that exists.
+
+**The fix**: bake the runtime in with the same NEVRA discipline, have the image announce its own pins, and make the scripts *assert* rather than install — the pinned NEVRA inside the image, and a distro-agnostic link probe outside it. **No script installs a tool on any path.** Inside the image an install defeats the pinning; outside it, an install is unpinned by construction and silently changes what the run measures.
 
 - [ ] **Step 1: Resolve the real NEVRA — do not guess it**
 
@@ -518,22 +520,33 @@ Replace the whole `for _san in asan ubsan; do ... done` block that Task 2 Step 6
       echo "--- ${_san} runtime present at pinned ${IREE_DJL_TOOLSET_NEVRA} ---"
     done
   else
-    # Bare host or unpinned base: a convenience path, and it says so. Versions here are
-    # whatever the host offers, so results are not comparable to a pinned-image run.
-    echo "--- WARNING: not the pinned image; sanitizer runtime versions are unpinned ---"
-    TOOLSET_VER="$(gcc -dumpversion | cut -d. -f1)"
-    for _san in asan ubsan; do
-      if rpm -q --quiet "gcc-toolset-${TOOLSET_VER}-lib${_san}-devel"; then
-        echo "--- ${_san} runtime already present (unpinned) ---"
-      elif command -v dnf >/dev/null 2>&1; then
-        echo "--- Installing ${_san} runtime (dnf, unpinned), may appear to hang ---"
-        dnf install -y -q "gcc-toolset-${TOOLSET_VER}-lib${_san}-devel"
+    # Not the pinned image. Probe for what actually matters -- can this toolchain LINK a
+    # sanitized binary -- rather than asking a package manager about a package name. The
+    # probe is distro-agnostic (the previous rpm/dnf version was dead code on Ubuntu, which
+    # is what both the workstation and the GitHub runner run: rpm is command-not-found and
+    # `command -v dnf` is false, so the whole block was a silent no-op that had never run).
+    # This script installs nothing: an install here would be unpinned by construction.
+    echo "--- WARNING: not the pinned image; toolchain versions are unpinned and results are not comparable ---"
+    _probe="$(mktemp -d)"
+    printf 'int main(){return 0;}\n' > "${_probe}/probe.cpp"
+    for _san in address undefined; do
+      if ! "${CXX:-g++}" -fsanitize="${_san}" "${_probe}/probe.cpp" -o "${_probe}/probe" 2>/dev/null; then
+        echo "cannot link -fsanitize=${_san} with ${CXX:-g++}; install your toolchain's sanitizer runtime" >&2
+        echo "  Debian/Ubuntu: it ships with gcc (libasan/libubsan); try reinstalling g++" >&2
+        echo "  RHEL family:   gcc-toolset-<N>-lib{asan,ubsan}-devel" >&2
+        rm -rf "${_probe}"
+        exit 1
       fi
     done
+    rm -rf "${_probe}"
+    echo "--- asan and ubsan runtimes link (unpinned host toolchain) ---"
   fi
 ```
 
-Note the dropped `|| true`: a failed install on the host path should fail the run, not proceed to a confusing link error.
+Two deliberate departures from the block this replaces:
+
+- **No package manager, on either path.** The old `rpm`/`dnf` branch could not run on Ubuntu, so it was untested code guarding a case it never handled. A link probe tests the property the build depends on and works anywhere.
+- **The script installs nothing, ever.** Inside the image an install defeats the pinning; outside it, an install is unpinned by construction and silently changes what the run measures. Both are failures, so both fail. The dropped `|| true` follows from the same rule.
 
 - [ ] **Step 6: Give `build.sh`'s ninja fallback the same treatment**
 
@@ -548,10 +561,16 @@ Replace `native/build.sh:74`:
     [ "$(ninja --version)" = "${IREE_DJL_NINJA_VERSION}" ] || {
       echo "BROKEN IMAGE: ninja $(ninja --version), image pins ${IREE_DJL_NINJA_VERSION}." >&2; exit 1; }
   else
+    # Same rule as build_qa.sh: this script installs nothing. `pip install ninja` here was
+    # unpinned against an image that pins 1.13.0, and on the Ubuntu workstation and runner
+    # ninja is already on PATH from the distro anyway (1.11.1, measured) -- so the install
+    # only ever fired in environments nobody uses, at whatever version PyPI served that day.
     command -v ninja >/dev/null 2>&1 || {
-      echo "--- WARNING: not the pinned image; installing ninja unpinned ---"
-      pip install ninja
+      echo "ninja is not on PATH. Install it (Debian/Ubuntu: apt install ninja-build) or run" >&2
+      echo "through the pinned image: ./native/local_build_wrapper.sh native/build.sh" >&2
+      exit 1
     }
+    echo "--- WARNING: not the pinned image; ninja $(ninja --version) is unpinned ---"
   fi
 ```
 
@@ -588,7 +607,27 @@ docker run --rm -e IREE_DJL_TOOLSET_NEVRA=99.9.9-9.el8_10 \
 
 Expected: `BROKEN IMAGE: gcc-toolset-14-libubsan-devel-99.9.9-9.el8_10 is not installed at the pinned NEVRA.` and a **nonzero** exit, with no `dnf install` attempted.
 
-- [ ] **Step 10: Commit**
+- [ ] **Step 10: Verify the host path, which is now a real path**
+
+The workstation is Ubuntu, so this branch actually runs here — unlike the `rpm`/`dnf` code it replaces. Run `build_qa.sh` directly on the host, outside the container:
+
+```bash
+systemd-run --user --scope -p MemoryMax=4G taskset -c 0-3 timeout 1800 \
+  bash -c './native/build_qa.sh' 2>&1 | tee /tmp/qa-host.log
+grep -E "WARNING: not the pinned image|runtimes link" /tmp/qa-host.log
+```
+
+Expected: the unpinned-toolchain warning and `--- asan and ubsan runtimes link (unpinned host toolchain) ---`, then a normal QA run. Measured on this host, `g++ -fsanitize=address` and `-fsanitize=undefined` both link out of the box (`libasan8`, `libubsan1` arrive with gcc), so the probe should pass without anything being installed.
+
+Then confirm the failure path reads well, without breaking your toolchain:
+
+```bash
+CXX=/bin/false ./native/build_qa.sh; echo "exit=$?"
+```
+
+Expected: `cannot link -fsanitize=address with /bin/false`, the two package hints, and a nonzero exit.
+
+- [ ] **Step 11: Commit**
 
 ```bash
 git add docker/linux-x86_64.Dockerfile docker/linux-aarch64.Dockerfile \
@@ -601,10 +640,17 @@ not baked in at all -- so inside the container the guard failed and dnf pulled
 an unpinned libubsan on every run, with || true hiding failures. build.sh did
 the same with an unpinned pip install ninja against an image pinning 1.13.0.
 
+The host branch was dead code besides: both the workstation and the runner are
+Ubuntu, where rpm is command-not-found and dnf is absent, so the loop fell
+through silently and had never actually run.
+
 Both images now bake libubsan at the same NEVRA as libasan and publish their
 pins as environment variables. The scripts assert against those inside the
-image -- a miss is a broken image, exit nonzero -- and install only outside it,
-saying so."
+image -- a miss is a broken image, exit nonzero -- and outside it probe that
+the toolchain can link -fsanitize=address/undefined, which is distro-agnostic
+and tests the property the build depends on. Neither script installs anything
+on any path: inside the image that defeats the pinning, outside it it is
+unpinned by construction."
 ```
 
 ---
@@ -1095,7 +1141,8 @@ Run before claiming the work is done:
 - [ ] Every build and test invocation ran inside a `systemd-run --user --scope` with `--no-daemon` on the Gradle commands, and containment was confirmed at least once via the `/proc/<pid>/cgroup` check. No host-wide OOM kill occurred.
 - [ ] Every container run went through `native/local_build_wrapper.sh` with its `--memory`/`--memory-swap`/`--cpuset-cpus` limits in place, confirmed once via `docker stats`. A host scope does not contain a container, so this is a separate check, not a duplicate of the one above.
 - [ ] The Windows branch of `native/build_qa.sh` is byte-identical to before this work.
-- [ ] No script installs a tool inside the pinned image. `./native/local_build_wrapper.sh native/build_qa.sh` logs zero `Installing ... runtime` lines, and `native/build.sh` logs no `pip install ninja`. Both report the pinned NEVRA instead.
+- [ ] No script installs a tool on any path. `./native/local_build_wrapper.sh native/build_qa.sh` logs zero `Installing ... runtime` lines and reports the pinned NEVRA; `native/build.sh` logs no `pip install ninja`; and no `rpm`/`dnf`/`apt` invocation remains in either script.
+- [ ] The host path was exercised on Ubuntu (Task 3 Step 10), not just the container path.
 - [ ] The broken-image path was proven to fail loudly (Task 3 Step 9), not just assumed.
 
 ## Deferred, by decision
