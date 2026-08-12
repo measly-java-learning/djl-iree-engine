@@ -5,7 +5,8 @@
 // error paths a bad manifest entry (missing file, empty file, truncated
 // header, wrong scope name) can hit. Build and run with:
 //   ./native/build_qa.sh
-//   ./native/build/iree_params_test
+//   ./native/qa/iree_params_test
+// (or ./native/build.sh -DIREE_DJL_BUILD_TESTS=ON and ./native/build/iree_params_test)
 // (a separate binary from iree_runtime_test; same CMake QA target.)
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>

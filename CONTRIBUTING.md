@@ -39,10 +39,14 @@ linkable library, which is exactly why the dist artifact exists.
 JAVA_HOME=/usr/lib/jvm/zulu-17-amd64 ./gradlew test    # JVM tests
 ```
 
-The JVM suite: `IreeNativeTest` (JNI boundary, including the scale/scale2 parameter-archive
-loads), `AddModelIT` (the implicit bare-`.vmfb` door), `ModelManifestTest` (schema rules),
+The JVM suite spans 15 classes under `src/test/java/org/measly/iree/`. The core functional
+path: `IreeNativeTest` (JNI boundary, including the scale/scale2 parameter-archive loads),
+`AddModelIT` (the implicit bare-`.vmfb` door), `ModelManifestTest` (schema rules),
 `ModelResolverTest` (front doors + containment), and `ScaleModelIT` (manifest directory end to
-end → `[2, 4, 6, 8]`).
+end → `[2, 4, 6, 8]`). Alongside it: the observability suites (`IreeEngineStatsTest`,
+`IreeEngineStatsJmxIT`, `StatsConcurrencyIT`, `IreeModelCountersTest`), `LibUtilsTest`,
+`LeakStressTest`, `IreeDataTypesTest`, and the JNI edge-case suites `IreeNativeArityTest`,
+`IreeNativeNullArgsTest`, and `IreeNativeOomTest`.
 
 ## Container build
 
@@ -91,7 +95,8 @@ paths and container-absolute paths that host clangd cannot resolve. Four things 
   `.so` is always built against the Corretto 8 headers baked into the pinned build image
   (`docker/<platform>.Dockerfile`), whatever your host has.
 - **Configure hits the network**, on the same terms as any build: the SHA256-pinned
-  `iree-runtime-dist` tarball plus a Catch2 clone from GitHub.
+  `iree-runtime-dist` tarball plus a SHA256-pinned Catch2 tarball from GitHub (no `git`
+  required for either).
 - **Sanitizer gates don't touch this database.** `native/qa` is a separate tree, so
   `-DIREE_DJL_SANITIZE=ON` / `-DIREE_DJL_TSAN=ON` builds never disturb `native/build-clangd`
   and `jni/iree_djl_jni.cpp` stays indexed.
@@ -109,9 +114,10 @@ clangd infers their flags from `core/iree_runtime.cpp`, which includes all three
 ## Native QA
 
 ```bash
-# Catch2 units (9 cases). native/build.sh defaults to -DIREE_DJL_BUILD_TESTS=OFF — the shipping
-# build stages only the .so, so it no longer clones and compiles Catch2. Opt back in to get the
-# test binaries in native/build, or just run ./native/build_qa.sh, which builds them either way.
+# Catch2 units: iree_runtime_test (28 cases) and iree_params_test (9 cases). native/build.sh
+# defaults to -DIREE_DJL_BUILD_TESTS=OFF — the shipping build stages only the .so, so it no
+# longer clones and compiles Catch2. Opt back in to get the test binaries in native/build, or
+# just run ./native/build_qa.sh, which builds them either way (into native/qa instead).
 ./native/build.sh -DIREE_DJL_BUILD_TESTS=ON
 ./native/build/iree_runtime_test
 

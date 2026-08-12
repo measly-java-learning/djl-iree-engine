@@ -21,13 +21,19 @@ findings documents it links.
 ## Gauge semantics: `-1` versus `0`
 
 **Byte gauges use `-1` for "unavailable" and `0` for "genuinely zero".** `stagingBytes == 0`
-means nothing has staged yet, which is a real state. `deviceBytesPeak == -1` means IREE's
-allocator statistics were compiled out of the runtime, so the figure is unknowable — check
-`isNativeStatsAvailable()`, which is `false` exactly when every `deviceBytes*` figure is `-1`.
+means nothing has staged yet, which is a real state. `-1` means the figure could not be
+produced, for any of three reasons: IREE's allocator statistics were compiled out of the
+runtime, the model was closed by the time the poll reached it (`toStats()` seeds every gauge —
+`wrapped`, `staged`, `stagingBytes`, and both device figures — to `-1` and leaves them there
+when the handle is already gone), or the native read itself failed. `isNativeStatsAvailable()`
+distinguishes only the first of those: it is a handle-free build probe, so it can read `true`
+while a concurrent `close()` still produces an all-`-1` snapshot.
 
 The distinction matters for a dashboard: averaging or summing a `-1` sentinel silently
-corrupts a chart, so filter on `isNativeStatsAvailable()` rather than treating the gauge as a
-number in all cases.
+corrupts a chart, so filter on the gauge value itself (skip a reading if any figure you plan to
+use is `-1`) rather than relying on `isNativeStatsAvailable()` to catch every case — it tells
+you whether the build supports statistics at all, not whether this particular reading landed
+before the model closed.
 
 ## JMX
 

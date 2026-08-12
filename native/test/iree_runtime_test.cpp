@@ -4,8 +4,9 @@
 // path, Stats()/AliveRuntimeCount() observability, and the error paths Load()
 // and Invoke() throw on. Build and run with:
 //   ./native/build_qa.sh
-//   ./native/build/iree_runtime_test
-// build_qa.sh links ASan+UBSan (see native/CMakeLists.txt), so a case that
+//   ./native/qa/iree_runtime_test
+// (or ./native/build.sh -DIREE_DJL_BUILD_TESTS=ON and ./native/build/iree_runtime_test)
+// build_qa.sh links ASan (see native/CMakeLists.txt), so a case that
 // passes here is also a case LSan has had a chance to catch a leak in.
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators_all.hpp>

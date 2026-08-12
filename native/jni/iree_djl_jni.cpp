@@ -561,8 +561,9 @@ Java_org_measly_iree_jni_IreeNative_allocateDirectAligned(JNIEnv* env, jclass,
   return buffer;
 }
 
-// Idempotent by contract: called exactly once per buffer, from the Cleaner.
-// 0 is a no-op (bufferAddress of a non-direct buffer).
+// Called exactly once per buffer, from the Cleaner. 0 is a no-op (bufferAddress
+// of a non-direct buffer); a genuine double-free is undefined behavior, not
+// safe to rely on — see IreeNative.freeDirectAligned's javadoc.
 extern "C" JNIEXPORT void JNICALL
 Java_org_measly_iree_jni_IreeNative_freeDirectAligned(JNIEnv*, jclass,
                                                       jlong address) {

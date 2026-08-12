@@ -158,7 +158,7 @@ declare them yourself, as the quickstart does.
 
 | Platform | Artifact | HAL driver | QA |
 |---|---|---|---|
-| `linux-x86_64` | `libiree_djl.so` | `local-sync` (default), `local-task` | Catch2 + ASan/LSan leak harness; TSan |
+| `linux-x86_64` | `libiree_djl.so` | `local-sync` (default), `local-task` | Catch2 + ASan/LSan leak harness; TSan (`local-sync` only — see [CONTRIBUTING.md](CONTRIBUTING.md#native-qa)) |
 | `linux-aarch64` | `libiree_djl.so` | `local-sync` (default), `local-task` | Catch2 + ASan/LSan leak harness |
 | `windows-x86_64` | `iree_djl.dll` | `local-sync` (default), `local-task` | Catch2 + static-CRT assertion |
 
