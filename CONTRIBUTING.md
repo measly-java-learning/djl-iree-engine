@@ -180,3 +180,15 @@ itself changes:
 uv pip install iree-base-compiler==3.11.0
 ./tools/export_add.sh
 ```
+
+## Design records
+
+`docs/` holds the measurement writeups and investigation notes behind the decisions in this
+engine — the zero-copy and staging measurements, the IRPA spike, the `iree-runtime-dist`
+handover and usability report. `docs/superpowers/` holds the design and plan documents for
+each chunk of work.
+
+These are dated working records, not maintained documentation: they say what was true and
+what was decided at the time. Where one disagrees with the code, the code wins. Reach for
+them to answer "why is it like this", not "how do I use this" — for that, see the
+[README](README.md) and [`docs/observability.md`](docs/observability.md).

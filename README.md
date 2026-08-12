@@ -287,10 +287,8 @@ It is **experimental**.
 
 Whether this matters depends entirely on the workload: for memory-bound kernels the staged copy
 costs up to ~90% of the call at 256 KB–4 MB inputs; for compute-heavy models (MobileNet, 61.6 ms
-kernel) it is ~0.5% noise. Full measurements:
-[`docs/2026-08-04-borrowed-host-buffers-findings.md`](docs/2026-08-04-borrowed-host-buffers-findings.md)
-§3 and
-[`docs/2026-08-04-staging-and-output-findings.md`](docs/2026-08-04-staging-and-output-findings.md).
+kernel) it is ~0.5% noise. Measure your own case with the staged-import rate above before
+reaching for the flag.
 
 ## Threading
 
@@ -299,13 +297,11 @@ kernel) it is ~0.5% noise. Full measurements:
 
 ## Status and limitations
 
-**Walking skeleton with manifest loading.** This exists to answer whether IREE works
-as a DJL engine and at what cost. It runs a trivial `add` model end to end, and `Model.load`
-accepts a model artifact that names a `.vmfb` plus scope-bound `.irpa` parameter archives in a
-manifest JSON document. The go/no-go question is answered in
-[`docs/superpowers/specs/2026-07-19-djl-iree-engine-findings.md`](docs/superpowers/specs/2026-07-19-djl-iree-engine-findings.md)
-(verdict: **GO**). It is not a finished product — see the deferred list in the design doc and
-the findings doc.
+**Walking skeleton with manifest loading.** This exists to answer whether IREE works as a
+DJL engine and at what cost. The answer so far is yes: it runs models end to end, and
+`Model.load` accepts a model artifact naming a `.vmfb` plus scope-bound `.irpa` parameter
+archives in a manifest JSON document. It is not a finished product, and the limits below are
+the ones that will decide whether it fits your case.
 
 Known limits worth knowing before you adopt it:
 
@@ -337,17 +333,3 @@ tied to the runtime pin (`native/cmake/IreeRuntimePin.cmake`); refresh it when t
 Build prerequisites, the build and test loop, clangd editor setup, the native QA gates, and the
 container build are all in [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
-## Docs
-
-- Observability reference: [`docs/observability.md`](docs/observability.md)
-- Design: [`docs/superpowers/specs/2026-07-19-djl-iree-engine-skeleton-design.md`](docs/superpowers/specs/2026-07-19-djl-iree-engine-skeleton-design.md)
-- Findings (the go/no-go writeup): [`docs/superpowers/specs/2026-07-19-djl-iree-engine-findings.md`](docs/superpowers/specs/2026-07-19-djl-iree-engine-findings.md)
-- Plan: [`docs/superpowers/plans/2026-07-19-djl-iree-engine-skeleton.md`](docs/superpowers/plans/2026-07-19-djl-iree-engine-skeleton.md)
-- IRPA manifest loading (this chunk): [`docs/superpowers/specs/2026-08-02-irpa-manifest-loading-design.md`](docs/superpowers/specs/2026-08-02-irpa-manifest-loading-design.md)
-- Windows amd64 support: [`docs/superpowers/specs/2026-08-03-windows-amd64-support-design.md`](docs/superpowers/specs/2026-08-03-windows-amd64-support-design.md)
-- Wishlist for the dist project, with delivered/open status:
-  [`docs/superpowers/specs/iree-runtime-dist-wishlist.md`](docs/superpowers/specs/iree-runtime-dist-wishlist.md)
-- `iree-runtime-dist` handover (what the artifact actually ships):
-  [`docs/2026-07-20-djl-iree-engine-handover.md`](docs/2026-07-20-djl-iree-engine-handover.md)
-- Usability report on the dist artifact, with filed issues and verdict:
-  [`docs/2026-07-20-iree-runtime-dist-usability-report.md`](docs/2026-07-20-iree-runtime-dist-usability-report.md)
