@@ -67,14 +67,14 @@ Expected: every listed PID's cgroup path contains `run-<id>.scope`. A PID showin
 
 **Two adjustments to the defaults:**
 
-- **`timeout 900` is too short for a cold native build.** Task 2 and Task 3 configure from scratch, and `FetchContent` pulls the pinned runtime tarball (and Catch2, for the QA tree) before compiling. Use `timeout 1800` for the first `./native/build.sh`, `./native/build_qa.sh` and `./native/ubsan_gate.sh` of a session; 900 is fine once the trees are warm.
+- **`timeout 900` is too short for a cold native build.** Task 2 and Task 4 configure from scratch, and `FetchContent` pulls the pinned runtime tarball (and Catch2, for the QA tree) before compiling. Use `timeout 1800` for the first `./native/build.sh`, `./native/build_qa.sh` and `./native/ubsan_gate.sh` of a session; 900 is fine once the trees are warm.
 - **`MemoryMax=4G` bounds the whole scope, not each JVM.** `ubsan_gate.sh` runs four test tasks in sequence, and `oomTest` deliberately pushes to its `-Xmx128m` ceiling — well inside 4G. If the scope OOMs anyway, that is a finding about the gate, not a reason to raise the cap: report it rather than retrying with `MemoryMax=8G`.
 
 If `systemd-run --user` is unavailable in a given environment (notably inside the CI containers, which have their own limits), say so and fall back to `taskset -c 0-3 timeout 900` alone rather than running unbounded.
 
 ### Containers need their own limits — the scope does not reach them
 
-**A `systemd-run --user --scope` wrapped around `docker run` contains nothing that matters.** This host runs the standard root Docker daemon (`docker info` reports no rootless mode), so container processes are children of the daemon's `containerd-shim` in the system slice, not of the invoking shell. The scope bounds only the short-lived `docker run` client. Anything run through `native/local_build_wrapper.sh` — which is the blessed way to run the native scripts, and what Task 4 Step 4 uses — is therefore **unbounded unless the container is limited directly**.
+**A `systemd-run --user --scope` wrapped around `docker run` contains nothing that matters.** This host runs the standard root Docker daemon (`docker info` reports no rootless mode), so container processes are children of the daemon's `containerd-shim` in the system slice, not of the invoking shell. The scope bounds only the short-lived `docker run` client. Anything run through `native/local_build_wrapper.sh` — which is the blessed way to run the native scripts, and what Task 5 uses — is therefore **unbounded unless the container is limited directly**.
 
 Constrain the container itself:
 
@@ -249,7 +249,9 @@ and a tagged class, since no single class can run under all four tasks."
 
 **Interfaces:**
 - Consumes: nothing from Task 1.
-- Produces: CMake option `IREE_DJL_UBSAN` (BOOL, default `OFF`) and cache variable `IREE_DJL_UBSAN_CHECKS` (STRING, default `undefined,float-cast-overflow,float-divide-by-zero`). Task 3 turns the same option on for a different tree and adds `-static-libubsan` on top.
+- Produces: CMake option `IREE_DJL_UBSAN` (BOOL, default `OFF`) and cache variable `IREE_DJL_UBSAN_CHECKS` (STRING, default `undefined,float-cast-overflow,float-divide-by-zero`). Task 4 turns the same option on for a different tree and adds `-static-libubsan` on top.
+
+> **Superseded in part by Task 3.** Step 6 of this task extended `build_qa.sh`'s `dnf install` fallback to UBSan. That was wrong: libubsan is not baked into the pinned images, so inside the container the `rpm -q` guard fails and an **unpinned** `gcc-toolset-14-libubsan-devel` gets installed on every run — defeating the NEVRA pinning `431f649` established. Task 3 bakes the runtime into the images and converts the scripts from installing to asserting. Do not replicate Step 6's pattern anywhere else.
 
 - [ ] **Step 1: Add the CMake option**
 
@@ -419,7 +421,195 @@ Linux only: MSVC has no UBSan."
 
 ---
 
-### Task 3: Gate B — UBSan on the JNI shim, driven by the JVM suite
+### Task 3: Pin the UBSan runtime in the images; stop the scripts installing tools
+
+**Files:**
+- Modify: `docker/linux-x86_64.Dockerfile` (bake libubsan; export pin markers)
+- Modify: `docker/linux-aarch64.Dockerfile` (same)
+- Modify: `native/build_qa.sh` (the sanitizer-runtime block added by Task 2 Step 6)
+- Modify: `native/build.sh:74` (the `pip install ninja` fallback)
+
+**Interfaces:**
+- Consumes: the `IREE_DJL_UBSAN` wiring from Task 2.
+- Produces: image environment variables `IREE_DJL_PINNED_IMAGE=1`, `IREE_DJL_TOOLSET_VER`, `IREE_DJL_TOOLSET_NEVRA`, `IREE_DJL_NINJA_VERSION`. Tasks 4 and 5 rely on the pinned images carrying a UBSan runtime; without this task, the CI job's UBSan build has nothing to link against.
+
+**The defect.** The images go to real lengths to pin — a dated base tag, the exact NEVRA `gcc-toolset-14-libasan-devel-14.2.1-11.el8_10`, `ninja==1.13.0`, a versioned Corretto URL with a SHA-256, and image-build-time assertions. The scripts then undo it at run time:
+
+1. `build_qa.sh`'s guard is `rpm -q --quiet "gcc-toolset-${VER}-lib${_san}-devel"` — a **bare package name**, so any version satisfies it. The NEVRA the image pins is never verified.
+2. libubsan is not baked into either image, so that guard **fails** inside the container and `dnf install -y -q` pulls an unpinned libubsan on every run, with `|| true` swallowing any failure. This is live now: Task 2 Step 6 introduced it.
+3. `build.sh:74` runs `command -v ninja || pip install ninja` — unpinned, against an image that pins `ninja==1.13.0`.
+4. Nothing distinguishes "running in the pinned image" from "running on a bare host", so a fallback meant for host runs silently becomes drift inside the container.
+
+**The fix**: bake the runtime in with the same NEVRA discipline, have the image announce its own pins, and make the scripts *assert* inside the image and only install outside it — loudly, and pinned.
+
+- [ ] **Step 1: Resolve the real NEVRA — do not guess it**
+
+The version must match the base image's compiler exactly; a libubsan from a different toolset revision than the gcc that emitted the instrumentation is the same class of confusing link error the Dockerfile comment already warns about for ASan.
+
+```bash
+docker run --rm quay.io/pypa/manylinux_2_28_x86_64:2026.06.04-1 \
+  bash -c 'dnf list --showduplicates gcc-toolset-14-libubsan-devel 2>/dev/null | tail -5; gcc -dumpversion'
+```
+
+Expect `14.2.1-11.el8_10` to be available, matching the pinned libasan. **If it is not, stop and report** — do not pin a different revision than libasan. Repeat for `manylinux_2_28_aarch64` before editing that Dockerfile.
+
+- [ ] **Step 2: Bake libubsan into both Dockerfiles**
+
+In `docker/linux-x86_64.Dockerfile`, extend the existing `RUN dnf install` and its comment:
+
+```dockerfile
+# gcc-toolset-14-libubsan-devel  the UBSan runtime for native/build_qa.sh and
+#                      native/ubsan_gate.sh. Same NEVRA as libasan above and for the same
+#                      reason: it must match the gcc that emitted the instrumentation.
+RUN dnf install -y \
+      gcc-toolset-14-libasan-devel-14.2.1-11.el8_10 \
+      gcc-toolset-14-libubsan-devel-14.2.1-11.el8_10 \
+    && dnf clean all \
+    && rm -rf /var/cache/dnf
+```
+
+Apply the identical change to `docker/linux-aarch64.Dockerfile`, using the NEVRA resolved for that base in Step 1.
+
+- [ ] **Step 3: Have the image announce its own pins**
+
+The scripts cannot assert against values they do not know, and duplicating the NEVRA into a shell script creates a second source of truth that will drift. Instead the image publishes what it baked. Add to both Dockerfiles, immediately after the `dnf install` layer:
+
+```dockerfile
+# The scripts assert against these rather than installing anything: presence of
+# IREE_DJL_PINNED_IMAGE means "you are in the pinned image, a missing tool is a broken image,
+# not something to fix at run time". Keep the NEVRA here identical to the dnf line above --
+# this is the single source of truth, and native/build_qa.sh reads it from the environment.
+ENV IREE_DJL_PINNED_IMAGE=1
+ENV IREE_DJL_TOOLSET_VER=14
+ENV IREE_DJL_TOOLSET_NEVRA=14.2.1-11.el8_10
+ENV IREE_DJL_NINJA_VERSION=1.13.0
+```
+
+- [ ] **Step 4: Assert at image-build time**
+
+Extend the final assertion block in both Dockerfiles, so a pin that stops delivering fails at image build rather than three steps into a QA run:
+
+```dockerfile
+    && rpm -q "gcc-toolset-${IREE_DJL_TOOLSET_VER}-libasan-devel-${IREE_DJL_TOOLSET_NEVRA}" \
+      || { echo "libasan NEVRA not installed as pinned"; exit 1; } \
+    && rpm -q "gcc-toolset-${IREE_DJL_TOOLSET_VER}-libubsan-devel-${IREE_DJL_TOOLSET_NEVRA}" \
+      || { echo "libubsan NEVRA not installed as pinned"; exit 1; } \
+    && test "$(ninja --version)" = "${IREE_DJL_NINJA_VERSION}" \
+      || { echo "ninja is $(ninja --version), expected ${IREE_DJL_NINJA_VERSION}"; exit 1; }
+```
+
+- [ ] **Step 5: Replace the install fallback in `build_qa.sh` with an assertion**
+
+Replace the whole `for _san in asan ubsan; do ... done` block that Task 2 Step 6 added:
+
+```bash
+  # Sanitizer runtimes. In the pinned image these are baked in at an exact NEVRA (see
+  # docker/*.Dockerfile); a missing one means a BROKEN IMAGE, and installing it here at
+  # whatever version dnf offers would silently defeat the pinning the image exists to
+  # provide. So: assert inside the image, install only outside it, and never silently.
+  if [ -n "${IREE_DJL_PINNED_IMAGE:-}" ]; then
+    for _san in asan ubsan; do
+      _pkg="gcc-toolset-${IREE_DJL_TOOLSET_VER}-lib${_san}-devel-${IREE_DJL_TOOLSET_NEVRA}"
+      if ! rpm -q --quiet "${_pkg}"; then
+        echo "BROKEN IMAGE: ${_pkg} is not installed at the pinned NEVRA." >&2
+        echo "Rebuild the image (docker/${IR_PLATFORM:-linux-$(uname -m)}.Dockerfile); do not install it here." >&2
+        exit 1
+      fi
+      echo "--- ${_san} runtime present at pinned ${IREE_DJL_TOOLSET_NEVRA} ---"
+    done
+  else
+    # Bare host or unpinned base: a convenience path, and it says so. Versions here are
+    # whatever the host offers, so results are not comparable to a pinned-image run.
+    echo "--- WARNING: not the pinned image; sanitizer runtime versions are unpinned ---"
+    TOOLSET_VER="$(gcc -dumpversion | cut -d. -f1)"
+    for _san in asan ubsan; do
+      if rpm -q --quiet "gcc-toolset-${TOOLSET_VER}-lib${_san}-devel"; then
+        echo "--- ${_san} runtime already present (unpinned) ---"
+      elif command -v dnf >/dev/null 2>&1; then
+        echo "--- Installing ${_san} runtime (dnf, unpinned), may appear to hang ---"
+        dnf install -y -q "gcc-toolset-${TOOLSET_VER}-lib${_san}-devel"
+      fi
+    done
+  fi
+```
+
+Note the dropped `|| true`: a failed install on the host path should fail the run, not proceed to a confusing link error.
+
+- [ ] **Step 6: Give `build.sh`'s ninja fallback the same treatment**
+
+Replace `native/build.sh:74`:
+
+```bash
+  # The pinned image bakes ninja in at an exact version; a miss there means a broken image,
+  # not something to paper over with an unpinned pip install.
+  if [ -n "${IREE_DJL_PINNED_IMAGE:-}" ]; then
+    command -v ninja >/dev/null 2>&1 || {
+      echo "BROKEN IMAGE: ninja is not on PATH in the pinned image; rebuild it." >&2; exit 1; }
+    [ "$(ninja --version)" = "${IREE_DJL_NINJA_VERSION}" ] || {
+      echo "BROKEN IMAGE: ninja $(ninja --version), image pins ${IREE_DJL_NINJA_VERSION}." >&2; exit 1; }
+  else
+    command -v ninja >/dev/null 2>&1 || {
+      echo "--- WARNING: not the pinned image; installing ninja unpinned ---"
+      pip install ninja
+    }
+  fi
+```
+
+- [ ] **Step 7: Verify the image is self-consistent**
+
+```bash
+docker build -t djl-iree-engine-build:linux-x86_64 -f docker/linux-x86_64.Dockerfile docker
+docker run --rm djl-iree-engine-build:linux-x86_64 bash -c \
+  'rpm -q gcc-toolset-14-libubsan-devel; echo "pinned=${IREE_DJL_PINNED_IMAGE} nevra=${IREE_DJL_TOOLSET_NEVRA}"'
+```
+
+Expected: the package prints at `14.2.1-11.el8_10`, and `pinned=1`. The image-build assertions from Step 4 must have passed for the build to succeed at all.
+
+- [ ] **Step 8: Verify the scripts assert rather than install**
+
+```bash
+./native/local_build_wrapper.sh native/build_qa.sh 2>&1 | tee /tmp/qa.log
+grep -c "Installing .* runtime" /tmp/qa.log
+grep "runtime present at pinned" /tmp/qa.log
+```
+
+Expected: the install line appears **zero** times, and both `asan` and `ubsan` report `runtime present at pinned 14.2.1-11.el8_10`. A nonzero install count means the container is still drifting.
+
+- [ ] **Step 9: Verify the broken-image path fails loudly**
+
+Prove the assertion actually bites, rather than trusting a passing run:
+
+```bash
+docker run --rm -e IREE_DJL_TOOLSET_NEVRA=99.9.9-9.el8_10 \
+  -v "$(pwd)":/workspace -w /workspace \
+  --memory=8g --memory-swap=8g --cpuset-cpus=0-3 \
+  djl-iree-engine-build:linux-x86_64 /bin/bash /workspace/native/build_qa.sh; echo "exit=$?"
+```
+
+Expected: `BROKEN IMAGE: gcc-toolset-14-libubsan-devel-99.9.9-9.el8_10 is not installed at the pinned NEVRA.` and a **nonzero** exit, with no `dnf install` attempted.
+
+- [ ] **Step 10: Commit**
+
+```bash
+git add docker/linux-x86_64.Dockerfile docker/linux-aarch64.Dockerfile \
+        native/build_qa.sh native/build.sh
+git commit -m "build: bake the UBSan runtime into the images; stop scripts installing tools
+
+The scripts were undoing the image pinning at run time. build_qa.sh guarded on
+a bare package name, so the pinned NEVRA was never verified, and libubsan was
+not baked in at all -- so inside the container the guard failed and dnf pulled
+an unpinned libubsan on every run, with || true hiding failures. build.sh did
+the same with an unpinned pip install ninja against an image pinning 1.13.0.
+
+Both images now bake libubsan at the same NEVRA as libasan and publish their
+pins as environment variables. The scripts assert against those inside the
+image -- a miss is a broken image, exit nonzero -- and install only outside it,
+saying so."
+```
+
+---
+
+### Task 4: Gate B — UBSan on the JNI shim, driven by the JVM suite
 
 **Files:**
 - Modify: `native/CMakeLists.txt:222` (the shim's sanitizer guard)
@@ -427,7 +617,7 @@ Linux only: MSVC has no UBSan."
 - Modify: `native/.gitignore` (ignore the new tree)
 
 **Interfaces:**
-- Consumes: `IREE_DJL_UBSAN` and `IREE_DJL_UBSAN_CHECKS` from Task 2; `-Xcheck:jni` from Task 1 (inherited automatically — this task must not set it again).
+- Consumes: `IREE_DJL_UBSAN` and `IREE_DJL_UBSAN_CHECKS` from Task 2; the NEVRA-pinned UBSan runtime from Task 3; `-Xcheck:jni` from Task 1 (inherited automatically — this task must not set it again).
 - Produces: `native/ubsan/libiree_djl.so`, a shim with the UBSan runtime statically linked, loadable by a stock JVM via `IREE_LIBRARY_PATH`.
 
 - [ ] **Step 1: Relax the shim guard**
@@ -624,14 +814,14 @@ and oomTest is the reproduction of issue 16."
 
 ---
 
-### Task 4: CI wiring
+### Task 5: CI wiring
 
 **Files:**
 - Modify: `.github/workflows/native-build-job.yml` (add the Gate B step to the Linux job)
 - Modify: `native/local_build_wrapper.sh:9-12,39` (container memory/CPU limits)
 
 **Interfaces:**
-- Consumes: `native/ubsan_gate.sh` from Task 3; the `IREE_DJL_UBSAN=ON` wiring in `build_qa.sh` from Task 2 (already in CI, no change needed).
+- Consumes: `native/ubsan_gate.sh` from Task 4; the `IREE_DJL_UBSAN=ON` wiring in `build_qa.sh` from Task 2 (already in CI, no change needed); the baked-in UBSan runtime from Task 3, without which the CI job's UBSan build has no runtime to link.
 - Produces: nothing later tasks depend on.
 
 **Scope:** Gates A and C need no CI change at all — Gate A rides inside `build_qa.sh`, which `.github/workflows/native-build-job.yml:64-70` already runs on both Linux matrix rows, and Gate C rides inside the `./gradlew test` and `./gradlew leakTest` at `.github/workflows/native-build.yml:66-68`. Only Gate B needs a new step, on **linux-x86_64 only**.
@@ -756,7 +946,7 @@ local container runs as the one unbounded path."
 
 ---
 
-### Task 5: Documentation
+### Task 6: Documentation
 
 **Files:**
 - Modify: `CONTRIBUTING.md:113-172` (Native QA section) and `CONTRIBUTING.md:35-49` (Build and test)
@@ -905,6 +1095,8 @@ Run before claiming the work is done:
 - [ ] Every build and test invocation ran inside a `systemd-run --user --scope` with `--no-daemon` on the Gradle commands, and containment was confirmed at least once via the `/proc/<pid>/cgroup` check. No host-wide OOM kill occurred.
 - [ ] Every container run went through `native/local_build_wrapper.sh` with its `--memory`/`--memory-swap`/`--cpuset-cpus` limits in place, confirmed once via `docker stats`. A host scope does not contain a container, so this is a separate check, not a duplicate of the one above.
 - [ ] The Windows branch of `native/build_qa.sh` is byte-identical to before this work.
+- [ ] No script installs a tool inside the pinned image. `./native/local_build_wrapper.sh native/build_qa.sh` logs zero `Installing ... runtime` lines, and `native/build.sh` logs no `pip install ninja`. Both report the pinned NEVRA instead.
+- [ ] The broken-image path was proven to fail loudly (Task 3 Step 9), not just assumed.
 
 ## Deferred, by decision
 
