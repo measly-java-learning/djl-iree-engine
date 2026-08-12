@@ -70,8 +70,25 @@ if [ "${IR_HOST_OS}" = "windows" ]; then
 else
   echo "--- Setting up Ninja (the shim configures with -G Ninja) ---"
   export PATH="/opt/python/cp312-cp312/bin:${PATH}"
-  # The pinned image bakes ninja in; only install when running on a bare base or a host.
-  command -v ninja >/dev/null 2>&1 || pip install ninja
+  # The pinned image bakes ninja in at an exact version; a miss there means a broken image,
+  # not something to paper over with an unpinned pip install.
+  if [ -n "${IREE_DJL_PINNED_IMAGE:-}" ]; then
+    command -v ninja >/dev/null 2>&1 || {
+      echo "BROKEN IMAGE: ninja is not on PATH in the pinned image; rebuild it." >&2; exit 1; }
+    [ "$(ninja --version)" = "${IREE_DJL_NINJA_VERSION}" ] || {
+      echo "BROKEN IMAGE: ninja $(ninja --version), image pins ${IREE_DJL_NINJA_VERSION}." >&2; exit 1; }
+  else
+    # Same rule as build_qa.sh: this script installs nothing. `pip install ninja` here was
+    # unpinned against an image that pins 1.13.0, and on the Ubuntu workstation and runner
+    # ninja is already on PATH from the distro anyway (1.11.1, measured) -- so the install
+    # only ever fired in environments nobody uses, at whatever version PyPI served that day.
+    command -v ninja >/dev/null 2>&1 || {
+      echo "ninja is not on PATH. Install it (Debian/Ubuntu: apt install ninja-build) or run" >&2
+      echo "through the pinned image: ./native/local_build_wrapper.sh native/build.sh" >&2
+      exit 1
+    }
+    echo "--- WARNING: not the pinned image; ninja $(ninja --version) is unpinned ---"
+  fi
   echo "--- Toolchain Versions ---"
   gcc --version; g++ --version; cmake --version; ninja --version
 fi
