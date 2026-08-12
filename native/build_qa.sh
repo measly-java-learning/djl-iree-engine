@@ -73,6 +73,12 @@ else
   # whatever version dnf offers would silently defeat the pinning the image exists to
   # provide. So: assert inside the image, install only outside it, and never silently.
   if [ -n "${IREE_DJL_PINNED_IMAGE:-}" ]; then
+    # The marker without its companions means either a hand-set IREE_DJL_PINNED_IMAGE or an
+    # image predating the ENV block in docker/*.Dockerfile. Say so: under `set -u` the bare
+    # dereference below would abort with bash's "unbound variable", which is the one path
+    # through this block that would NOT produce the legible message it exists to give.
+    : "${IREE_DJL_TOOLSET_VER:?IREE_DJL_PINNED_IMAGE is set but IREE_DJL_TOOLSET_VER is not -- rebuild the image from docker/*.Dockerfile, or unset the marker for a host run}"
+    : "${IREE_DJL_TOOLSET_NEVRA:?IREE_DJL_PINNED_IMAGE is set but IREE_DJL_TOOLSET_NEVRA is not -- rebuild the image from docker/*.Dockerfile, or unset the marker for a host run}"
     for _san in asan ubsan; do
       _pkg="gcc-toolset-${IREE_DJL_TOOLSET_VER}-lib${_san}-devel-${IREE_DJL_TOOLSET_NEVRA}"
       if ! rpm -q --quiet "${_pkg}"; then

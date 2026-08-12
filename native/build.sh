@@ -72,6 +72,10 @@ else
   # The pinned image bakes ninja in at an exact version; a miss there means a broken image,
   # not something to paper over with an unpinned pip install.
   if [ -n "${IREE_DJL_PINNED_IMAGE:-}" ]; then
+    # Same guard as native/build_qa.sh: under `set -u` a bare dereference of a companion
+    # variable the marker promises would abort with "unbound variable" instead of the
+    # BROKEN IMAGE message this branch exists to print.
+    : "${IREE_DJL_NINJA_VERSION:?IREE_DJL_PINNED_IMAGE is set but IREE_DJL_NINJA_VERSION is not -- rebuild the image from docker/*.Dockerfile, or unset the marker for a host run}"
     command -v ninja >/dev/null 2>&1 || {
       echo "BROKEN IMAGE: ninja is not on PATH in the pinned image; rebuild it." >&2; exit 1; }
     [ "$(ninja --version)" = "${IREE_DJL_NINJA_VERSION}" ] || {
