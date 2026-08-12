@@ -69,7 +69,6 @@ if [ "${IR_HOST_OS}" = "windows" ]; then
   cl 2>&1 | head -1; cmake --version; ninja --version
 else
   echo "--- Setting up Ninja (the shim configures with -G Ninja) ---"
-  export PATH="/opt/python/cp312-cp312/bin:${PATH}"
   # The pinned image bakes ninja in at an exact version; a miss there means a broken image,
   # not something to paper over with an unpinned pip install.
   if [ -n "${IREE_DJL_PINNED_IMAGE:-}" ]; then
