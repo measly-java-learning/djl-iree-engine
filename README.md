@@ -5,8 +5,8 @@ A [DJL](https://djl.ai/) engine that runs [IREE](https://iree.dev/) `.vmfb` mode
 Compile a model ahead of time with IREE, hand the `.vmfb` (and any `.irpa` parameter archives)
 to DJL's `Model.load`, and run it from Java through the ordinary `Predictor` API. The engine
 is a thin JNI shim over the IREE runtime, statically linked, published to Maven Central with a
-native library per platform. It is an early library with a deliberately small surface — read
-[Status and limitations](#status-and-limitations) before you depend on it.
+native library per platform. It runs on CPU; see
+[Status and limitations](#status-and-limitations) for the current boundaries.
 
 ## Quickstart
 
@@ -20,6 +20,18 @@ mkdir -p models src/main/java
 curl -Lo models/add.vmfb \
   https://raw.githubusercontent.com/measly-java-learning/djl-iree-engine/main/src/test/resources/models/add.vmfb
 ```
+
+That fixture is for **x86_64**, on Linux and Windows alike. On an aarch64 host, take the
+aarch64 build of the same model instead:
+
+```bash
+curl -Lo models/add.vmfb \
+  https://raw.githubusercontent.com/measly-java-learning/djl-iree-engine/main/src/test/resources/models/aarch64/add.vmfb
+```
+
+A `.vmfb` is compiled for one CPU architecture and does not run on another. It is portable
+across operating systems: these fixtures are built as architecture-generic embedded ELF, which
+IREE's loader reads the same way on any OS.
 
 `settings.gradle.kts`:
 
@@ -199,9 +211,22 @@ scope the compiled program references. Two obligations before you start:
   precisely to avoid whole-archive I/O.
 - **Compile `.vmfb` for a baseline CPU target.** A program built with
   `--iree-llvmcpu-target-cpu=host` on a modern machine faults with an illegal instruction
-  (SIGILL) on an older one. Compile for a baseline target until tier selection exists.
+  (SIGILL) on an older one. Compile for a baseline target until tier selection exists. This
+  applies to models you compile; the fixtures in this repository are already built that way.
 
 ### Manifest schema (v1)
+
+Minimal — `schemaVersion` and `program` are the only required keys:
+
+```json
+{
+  "schemaVersion": 1,
+  "program": "model.vmfb"
+}
+```
+
+With parameter archives, naming an entry point and binding each `.irpa` to the runtime scope
+the compiled program references:
 
 ```json
 {
@@ -215,12 +240,8 @@ scope the compiled program references. Two obligations before you start:
 }
 ```
 
-`schemaVersion` and `program` are required — the version must be a JSON integer and is never
-assumed when absent; `entryPoint` and `parameters` are optional (an absent `parameters` is
-equivalent to `{}`). Unknown fields are ignored, so the format can add keys without breaking
-this engine. Every path the manifest names is resolved against the manifest's own directory,
-must exist, and must stay inside that directory — checked on the resolved real path, so a
-symlink escape is caught too.
+`entryPoint` and `parameters` are optional. Every path a manifest names is resolved against the
+manifest's own directory and must stay inside it.
 
 ### Where `Model.load` looks
 
@@ -228,7 +249,7 @@ symlink escape is caught too.
 |---|---|
 | A regular file | Parsed as a manifest, whatever its name. |
 | A directory containing `djl-iree-model.json` | That file is parsed. |
-| A directory with no manifest but a `<prefix>.vmfb` | Implicit single-program, zero-parameter manifest (the pre-manifest behaviour). |
+| A directory with no manifest but a `<prefix>.vmfb` | Loaded as a single program with no parameters. |
 | A directory with neither | Error naming the directory and both things sought. |
 
 ### Load options
@@ -239,56 +260,40 @@ symlink escape is caught too.
 | `device` | load option only | `"local-sync"` |
 | `allowUnsafePaths` | load option only | `false` |
 
-`entryPoint` names a function of the compiled artifact, so the manifest is its natural home; the
-caller keeps an override because a `.vmfb` may export several. `device` and `allowUnsafePaths`
-are policy and never read from a manifest. `allowUnsafePaths` opts out of the containment check
-above by name — a manifest can never authorize its own path escapes.
+`entryPoint` names a function of the compiled artifact and belongs in the manifest, but a
+`.vmfb` may export several, so the caller can override it. `device` selects the HAL driver.
+`allowUnsafePaths` opts out of the containment check above; it is a load option only, so a
+manifest can never authorize its own path escapes.
 
 ## Observability
 
-`IreeEngineStats.snapshot()` returns an immutable view of engine configuration, process
-totals, and every live model. It never throws — a monitoring poll must not be the thing that
-breaks production. The engine also registers an MXBean at
-`org.measly.iree:type=IreeEngineStats` on the first model load.
+The engine registers an MXBean at `org.measly.iree:type=IreeEngineStats` on the first model
+load, so any JMX console sees it without extra wiring. `IreeEngineStats.snapshot()` returns the
+same data programmatically.
 
-```java
-IreeStatsSnapshot stats = IreeEngineStats.snapshot();
-for (IreeModelStats model : stats.getModels()) {
-    long imports = model.getWrappedImports() + model.getStagedImports();
-    double stagedRate = imports == 0 ? 0.0 : (double) model.getStagedImports() / imports;
-    System.out.printf(
-            "%s: %d forwards, %.1f%% staged, %d bytes staging%n",
-            model.getName(), model.getForwardCount(), stagedRate * 100, model.getStagingBytes());
-}
-```
-
-**The staged-import rate is the signal specific to this engine.** IREE imports a host buffer
-zero-copy only when it meets a 64-byte alignment precondition, and a Java direct `ByteBuffer`
-does not, so inputs handed straight from `NDArray.toByteBuffer()` stage a copy on every call.
-`stagedImports / (stagedImports + wrappedImports)` is how you find out whether that is
-happening to you.
-
-Full detail — gauge semantics, JMX registration and its failure handling, and why this is not
-`ai.djl.metric.Metrics` — is in [`docs/observability.md`](docs/observability.md).
+Expect per-model inference latency — load time, forward count, total and worst-case forward
+nanoseconds — and memory utilisation, both the bytes spent staging inputs and IREE's own device
+allocator peak and live figures. [`docs/observability.md`](docs/observability.md) covers the
+full surface.
 
 ## Performance and zero-copy inputs
 
-The engine copies caller data into engine-owned buffers on every call by default, because IREE
-requires 64-byte alignment (`IREE_HAL_HEAP_BUFFER_ALIGNMENT`) to import a host buffer zero-copy
-and the JVM guarantees only 8 for `ByteBuffer.allocateDirect`. A user-supplied direct buffer
-therefore imports zero-copy only when its malloc'd address happens to be aligned (~40% of small
-allocations) and otherwise stages a copy into a per-runtime cached staging buffer, reused across
-calls.
+The engine has two input modes. By default it copies your data into an engine-owned buffer on
+every call, because IREE imports a host buffer zero-copy only at 64-byte alignment
+(`IREE_HAL_HEAP_BUFFER_ALIGNMENT`) and the JVM guarantees only 8 for
+`ByteBuffer.allocateDirect`; anything unaligned stages a copy into a per-runtime staging buffer
+that is reused across calls. Set `-Diree.engine.alignedBuffers=true` and `NDManager.create`
+hands back 64-byte-aligned buffers instead, which import with no copy at all.
 
-Set `-Diree.engine.alignedBuffers=true` to have `NDManager.create` allocate 64-byte-aligned
-buffers instead; those import zero-copy. The engine allocates and the user writes into what the
-engine hands back. The flag is read per allocation, so it can be toggled around a measurement.
-It is **experimental**.
+The flag is off by default because it changes the contract, not because it is unfinished: you
+write into the buffer the engine gives you rather than bringing your own direct `ByteBuffer`.
+It is read per allocation, so it can be toggled around a measurement.
 
-Whether this matters depends entirely on the workload: for memory-bound kernels the staged copy
-costs up to ~90% of the call at 256 KB–4 MB inputs; for compute-heavy models (MobileNet, 61.6 ms
-kernel) it is ~0.5% noise. Measure your own case with the staged-import rate above before
-reaching for the flag.
+Whether the copy is worth eliminating is a property of your workload, and the honest answer is
+that you have to measure it. The smaller the model, the more the fixed copy cost matters
+relative to the kernel; for a large compute-bound model it disappears into noise. The
+staged-import rate in the statistics above tells you whether inputs are being copied at all,
+which is the first thing to establish.
 
 ## Threading
 
@@ -297,19 +302,14 @@ reaching for the flag.
 
 ## Status and limitations
 
-**Walking skeleton with manifest loading.** This exists to answer whether IREE works as a
-DJL engine and at what cost. The answer so far is yes: it runs models end to end, and
-`Model.load` accepts a model artifact naming a `.vmfb` plus scope-bound `.irpa` parameter
-archives in a manifest JSON document. It is not a finished product, and the limits below are
-the ones that will decide whether it fits your case.
-
-Known limits worth knowing before you adopt it:
+What the engine does not do, as of this release:
 
 - CPU only: the `local-sync` and `local-task` HAL drivers, no GPU backend.
 - No CPU target-tier selection — you must compile `.vmfb` for a baseline target yourself.
 - No archive handling: `.irpa` and `.vmfb` must be unpacked on disk.
 - `forward()` is single-threaded per model (see [Threading](#threading)).
-- Zero-copy input handling is behind an experimental flag.
+- Zero-copy input is opt-in and changes where your input buffers come from (see
+  [Performance and zero-copy inputs](#performance-and-zero-copy-inputs)).
 
 ## Third-party licenses
 

@@ -1,9 +1,26 @@
-# Observability reference
+# Observability
 
-The short version lives in [`README.md`](../README.md#observability). This file is the detail:
-what the numbers mean, how JMX behaves when it goes wrong, and why this exists alongside DJL's
-own metrics. It assumes you have read that section — what `IreeEngineStats.snapshot()` returns
-and the usage snippet are there and are not repeated here.
+`IreeEngineStats.snapshot()` returns an immutable view of engine configuration, process totals,
+and every live model. It never throws: a monitoring poll must not be the thing that breaks
+production. The engine also registers an MXBean at `org.measly.iree:type=IreeEngineStats` on the
+first model load, exposing the same data to any JMX console.
+
+```java
+IreeStatsSnapshot stats = IreeEngineStats.snapshot();
+for (IreeModelStats model : stats.getModels()) {
+    long imports = model.getWrappedImports() + model.getStagedImports();
+    double stagedRate = imports == 0 ? 0.0 : (double) model.getStagedImports() / imports;
+    System.out.printf(
+            "%s: %d forwards, %.1f%% staged, %d bytes staging%n",
+            model.getName(), model.getForwardCount(), stagedRate * 100, model.getStagingBytes());
+}
+```
+
+Per model you get latency — `getLoadNanos()`, `getForwardCount()`, `getForwardTotalNanos()`,
+`getForwardMaxNanos()` — and memory: `getStagingBytes()` for input staging, plus
+`getDeviceBytesPeak()` and `getDeviceBytesLive()` from IREE's own allocator. The snapshot adds
+process-wide totals, including counters for models that have since been closed, so a model's
+work is not lost from the process figures when it goes away.
 
 ## The staged-import rate
 
@@ -14,9 +31,9 @@ straight from `NDArray.toByteBuffer()` stage a copy on every call. `stagedImport
 (stagedImports + wrappedImports)` is how you find out whether that is happening to you.
 
 A high staged rate is not automatically a problem. Whether the copy is worth eliminating
-depends on the ratio of copy cost to kernel cost; see
-[Performance and zero-copy inputs](../README.md#performance-and-zero-copy-inputs) and the two
-findings documents it links.
+depends on the ratio of copy cost to kernel cost, which is a property of your model and needs
+measuring rather than guessing. Setting `-Diree.engine.alignedBuffers=true` makes
+`NDManager.create` hand back 64-byte-aligned buffers, which import with no copy.
 
 ## Gauge semantics: `-1` versus `0`
 
