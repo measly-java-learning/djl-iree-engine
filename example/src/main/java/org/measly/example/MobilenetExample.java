@@ -11,12 +11,31 @@ import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.List;
 
-/** Classifies a bundled image with MobileNetV2 through the IREE engine and prints top-5. */
+/**
+ * Classifies a bundled image with MobileNetV2 through the IREE engine and prints top-5.
+ *
+ * <p>Run with: {@code ./gradlew :example:run}. This automatically generates the model artifacts
+ * (if not already present) and passes the model directory to the JVM via the
+ * {@code example.models.dir} system property, which {@link ModelArtifacts#dir()} reads at
+ * runtime.
+ *
+ * <p><b>Direct execution:</b> If running this class directly from an IDE or command line
+ * (bypassing gradle), {@code ./gradlew :example:exportModels} must be run first to generate
+ * the MobileNetV2 model artifacts in {@code example/build/models/}. Direct execution will fail
+ * with "Missing model artifact" if the export has not completed. See {@code example/README.md}
+ * for full setup details.
+ */
 public final class MobilenetExample {
     private static final String ENGINE = "IREE";
     private static final String ARTIFACT = "mobilenet_v2.vmfb";
     private MobilenetExample() {}
 
+    /**
+     * Loads the MobileNetV2 model and classifies a bundled image.
+     *
+     * @param args ignored; reserved for future use
+     * @throws Exception if model loading, image parsing, or inference fails
+     */
     public static void main(String[] args) throws Exception {
  
         Path models = ModelArtifacts.require(ARTIFACT).getParent();

@@ -29,6 +29,18 @@ public final class LibUtils {
     // Not unit-tested: drives System.load, the IREE_LIBRARY_PATH env override, and
     // classpath extraction, all of which need the real native library and JVM state.
     // platform(), libName() and cacheRoot() are the unit-tested seams.
+    /**
+     * Loads the native shim, extracting it first if needed. See the class comment for the
+     * {@code IREE_LIBRARY_PATH} override and the content-addressed cache this falls back to.
+     *
+     * <p>Idempotent and synchronized: the first call in a JVM does the work, every later call
+     * (from any thread) returns immediately. There is no unload — the library lives for the
+     * process.
+     *
+     * @throws IllegalStateException if the classpath resource is missing, or extraction fails
+     * @throws UnsupportedOperationException if {@code os.name}/{@code os.arch} is not one this
+     *     engine ships a native library for; see {@link #platform()}
+     */
     public static synchronized void loadLibrary() {
         if (loaded) {
             return;

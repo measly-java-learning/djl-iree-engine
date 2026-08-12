@@ -3,8 +3,13 @@ package org.measly.iree.engine;
 import java.util.Map;
 
 /**
- * The {@code Model.load} options that this engine consumes, with defaults.
- * The single home of option-key names and defaults.
+ * The {@code Model.load} options that this engine consumes, with defaults. The single home of
+ * option-key names and defaults.
+ *
+ * <p>Each option has its own precedence against {@link ModelManifest}: {@code entryPoint} falls
+ * back to the manifest and then to {@code module.main}; {@code device} and {@code
+ * allowUnsafePaths} are option-only and are never read from a manifest — in particular, a
+ * manifest can never set {@code allowUnsafePaths} to authorize its own path escapes.
  *
  * @param entryPoint entry-point override, applied on top of the manifest
  *     value; null means "let the manifest (or the {@code module.main}
@@ -20,6 +25,17 @@ public record IreeLoadOptions(String entryPoint, String device, boolean allowUns
     private static final String KEY_ALLOW_UNSAFE_PATHS = "allowUnsafePaths";
     private static final String DEFAULT_DEVICE = "local-sync";
 
+    /**
+     * Reads options from the raw {@code Map<String, ?>} that {@code Model.load} receives.
+     *
+     * <p>Every value is read leniently: {@code entryPoint} and {@code device} are converted with
+     * {@code String.valueOf}, and {@code allowUnsafePaths} with {@code Boolean.parseBoolean}
+     * (so anything but a case-insensitive {@code "true"} yields {@code false}, including a
+     * missing key). A {@code null} map is treated as no options at all.
+     *
+     * @param options the raw load options, or {@code null}
+     * @return the parsed options, defaults applied for anything absent; never {@code null}
+     */
     public static IreeLoadOptions from(Map<String, ?> options) {
         if (options == null) {
             return new IreeLoadOptions(null, DEFAULT_DEVICE, false);

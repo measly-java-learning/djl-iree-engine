@@ -24,6 +24,11 @@ import org.slf4j.LoggerFactory;
  * (parallelizing a single invoke), but does not make concurrent invocation of
  * one session safe. {@code local-sync} holds the contract all the way down by
  * running everything on the calling thread.
+ *
+ * <p>Owned by the {@code IreeModel} that created it and freed by {@link #close()}, which must
+ * not run concurrently with a forward in flight — see {@link #forwardInternal} and {@link
+ * #close()} for the native handle this guards. Every forward's zero-copy/staged outcome rolls up
+ * into the cumulative counters in {@link IreeEngineStats#snapshot()}.
  */
 public class IreeSymbolBlock extends AbstractSymbolBlock implements AutoCloseable {
 
@@ -125,6 +130,10 @@ public class IreeSymbolBlock extends AbstractSymbolBlock implements AutoCloseabl
      * window {@link #toStats()} guards. On a closed model (handle zero) the native
      * per-call state died with the runtime; an empty array is returned rather than
      * throwing out of JNI.
+     *
+     * @return one entry per input to the last {@code forward()}, in input order — 1 if that
+     *     input imported into IREE zero-copy, 0 if it was staged; empty if the model has never
+     *     forwarded or is closed
      */
     public int[] getLastImportOutcomes() {
         synchronized (statsLock) {

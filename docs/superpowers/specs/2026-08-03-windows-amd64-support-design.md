@@ -1,9 +1,12 @@
 # Windows amd64 support for djl-iree-engine
 
 **Date:** 2026-08-03
-**Status:** Partially implemented — §3 (fixture portability fix) has shipped;
-the remaining sections (Windows amd64 support proper) are approved but not yet
-implemented.
+**Status:** Implemented and shipped. `windows-x86_64` is built, QA'd, and published
+by CI: see the `build-iree-shim-windows` job in
+`.github/workflows/native-build-job.yml` (MSVC on `windows-2022`, Catch2 via
+`native/build_qa.sh`, static-CRT assertion via `native/tests/check_windows_crt.sh`)
+and the `windows-x86_64` variant in `build.gradle.kts`, published to Maven Central
+as the `windows-x86_64` classifier jar.
 
 ## 1. Goal
 

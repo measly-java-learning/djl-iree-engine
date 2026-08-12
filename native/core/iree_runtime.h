@@ -9,6 +9,13 @@
 #include <string_view>
 #include <vector>
 
+// The C++ facade over the IREE runtime: this is the middle layer in the
+// JVM -> JNI -> IREE path. native/jni/ (Task 6) is the only caller of
+// anything declared here; it marshals JNI types to/from the types below and
+// otherwise does not touch IREE's C API directly. Everything IREE-specific --
+// handle lifetimes, status conversion, driver/session/module setup -- is
+// meant to stay behind this header so the JNI layer only ever sees
+// std/measly types and std::runtime_error.
 namespace measly::iree {
 
 // Borrowed input: a host pointer the caller keeps valid across Invoke().
@@ -115,10 +122,19 @@ class IreeRuntime {
                                            std::span<const ParameterScope> parameters,
                                            StagingMode staging);
 
+  // Releases the session, device, and instance (in that order — see the
+  // member declaration order in RuntimeState) and the retained vmfb copy.
+  // Non-throwing; any IREE teardown status is not surfaced here.
   ~IreeRuntime();
   IreeRuntime(const IreeRuntime&) = delete;
   IreeRuntime& operator=(const IreeRuntime&) = delete;
 
+  // Owning invoke: runs the call and copies every output into freshly
+  // allocated OutputBuffers before returning, so nothing IREE-side needs to
+  // stay alive past this call. Throws std::runtime_error on any IREE failure
+  // (a failed input import/copy, a failed invoke, or a failed output read).
+  // inputs are borrowed — the caller retains ownership and must keep them
+  // valid only for the duration of this call.
   std::vector<OutputBuffer> Invoke(std::span<const InputDesc> inputs);
 
   // View-based invoke: runs the call and returns only output METADATA; the
@@ -131,7 +147,15 @@ class IreeRuntime {
   // inputs; each clears the other's pending outputs first, so forgetting
   // ReleaseOutputs() leaks nothing (stale-batch guard).
   std::vector<OutputLayout> InvokeViews(std::span<const InputDesc> inputs);
+  // Copies output `index`'s bytes into dst, which the caller owns and must
+  // size to at least the corresponding OutputLayout::nbytes; dst is an
+  // arbitrary host destination, not required to be aligned. Valid only
+  // between an InvokeViews() call and the matching ReleaseOutputs(); throws
+  // std::out_of_range if index is outside the pending output set (including
+  // after ReleaseOutputs() or before any InvokeViews() call).
   void ReadOutput(size_t index, void* dst);  // throws std::out_of_range
+  // Releases the output views retained since the last InvokeViews(). Safe to
+  // call even if nothing is pending (a no-op then). Never throws.
   void ReleaseOutputs();
 
   // Empirical answer to "did the import zero-copy or silently stage?".
@@ -144,6 +168,11 @@ class IreeRuntime {
   // is exact — see RuntimeStats.
   RuntimeStats Stats() const;
 
+  // Takes ownership of state (an already-fully-constructed RuntimeState — see
+  // Load()); this constructor does no IREE setup of its own, only the
+  // AliveRuntimeCount() bookkeeping. Public rather than private so
+  // std::make_unique can call it (Load() is the only caller in practice);
+  // never call this directly with a partially-initialized state.
   explicit IreeRuntime(std::unique_ptr<RuntimeState> state);
 
  private:

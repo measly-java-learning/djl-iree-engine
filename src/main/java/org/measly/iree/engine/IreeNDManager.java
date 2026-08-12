@@ -14,7 +14,14 @@ import java.nio.ByteOrder;
 import org.measly.iree.jni.IreeNative;
 
 /**
- * Minimal tensor factory. Direct buffers only — the JNI layer requires them.
+ * Factory and owner for {@link IreeNDArray} tensors. Direct buffers only — the JNI layer
+ * requires them.
+ *
+ * <p>One instance per {@code Model}/{@code Predictor}, obtained through DJL's {@code
+ * NDManager} tree ({@link #newSubManager(Device)}); {@link #getSystemManager()} is the shared
+ * root and is never closed. Arrays created here are attached to this manager and freed when it
+ * closes, following the usual DJL manager lifetime rules — nothing engine-specific changes
+ * that contract.
  *
  * <p><b>System property {@code iree.engine.alignedBuffers} (default
  * {@code false}):</b> when set, {@link #allocateDirect(int)} returns
@@ -27,6 +34,11 @@ import org.measly.iree.jni.IreeNative;
  * {@link Cleaner} once the buffer becomes unreachable; it is not counted
  * against {@code -XX:MaxDirectMemorySize}. The flag is read per allocation, so
  * it can be toggled around a measurement. The copy path stays the default.
+ *
+ * <p>Tensors this manager creates are {@link IreeNDArray}; {@link #create(Buffer, Shape,
+ * DataType)} always allocates and copies into a fresh direct buffer via {@link
+ * #allocateDirect(int)}; {@link #wrap} attaches an already-direct buffer (a forward() output)
+ * without copying.
  */
 public class IreeNDManager extends BaseNDManager {
 

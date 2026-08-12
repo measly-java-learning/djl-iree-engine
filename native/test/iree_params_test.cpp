@@ -1,3 +1,13 @@
+// Catch2 suite for the .irpa parameter-archive path: ParameterScope binding
+// (native/core/iree_runtime.h) from manifest entries to the VM module's named
+// scopes, through Load()'s 4-argument overload. Covers the SPLAT and
+// FILE-backed archive kinds, multi-archive/multi-scope binding, and the
+// error paths a bad manifest entry (missing file, empty file, truncated
+// header, wrong scope name) can hit. Build and run with:
+//   ./native/build_qa.sh
+//   ./native/qa/iree_params_test
+// (or ./native/build.sh -DIREE_DJL_BUILD_TESTS=ON and ./native/build/iree_params_test)
+// (a separate binary from iree_runtime_test; same CMake QA target.)
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
 #include <cmath>
@@ -36,6 +46,10 @@ constexpr const char* kScale2BiasIrpa = IREE_DJL_SCALE2_BIAS_IRPA;
 constexpr int32_t kF32 = 0x21000020;  // IREE_HAL_ELEMENT_TYPE_FLOAT_32
 }  // namespace
 
+// Baseline: the 4-argument Load() (a SPLAT archive bound to the scope the
+// program imports from) succeeds. Every later case in this file is a
+// variation on this manifest-to-scope path, so this isolates a basic
+// wiring break from the more specific archive-kind and error cases below.
 TEST_CASE("loads a vmfb with a parameter archive", "[params]") {
   auto bytes = ReadFile(kScaleVmfb);
   const ParameterScope scopes[] = {{"model", kScaleIrpa}};
@@ -43,6 +57,10 @@ TEST_CASE("loads a vmfb with a parameter archive", "[params]") {
   REQUIRE(runtime != nullptr);
 }
 
+// Proves the bound archive's bytes actually reach the compiled program, not
+// just that Load() accepted the manifest: a splat-of-2.0 weight must produce
+// input*2, checked against the iree-run-module oracle rather than a value
+// picked to make the assertion trivially pass.
 TEST_CASE("golden vector: parameter-backed scale", "[params]") {
   auto bytes = ReadFile(kScaleVmfb);
   const ParameterScope scopes[] = {{"model", kScaleIrpa}};
@@ -105,6 +123,11 @@ TEST_CASE("golden vector: FILE-backed (zeroed) archive", "[params]") {
   }
 }
 
+// Two ParameterScope entries, two different scope names, one program that
+// imports from both: the expected output (input*2 + 10) can only be right if
+// each archive resolved under ITS OWN scope rather than, e.g., the second
+// entry silently overwriting or shadowing the first in whatever io_parameters
+// composes them into.
 TEST_CASE("two archives bound to two scopes", "[params]") {
   auto bytes = ReadFile(kScale2Vmfb);
   const ParameterScope scopes[] = {

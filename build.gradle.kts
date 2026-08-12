@@ -19,6 +19,13 @@ java {
 
 repositories { mavenCentral() }
 
+// javac's javadoc doesn't recognize @apiNote out of the box (it's a JDK-internal convention,
+// wired up only inside the JDK's own build); register it here so the jni package's internal-API
+// markers render instead of failing the doc build with "unknown tag".
+tasks.withType<Javadoc>().configureEach {
+    (options as StandardJavadocDocletOptions).tags("apiNote:a:API Note:")
+}
+
 dependencies {
     compileOnly(libs.djl.api)
     compileOnly(libs.slf4j.api)

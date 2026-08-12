@@ -1,6 +1,19 @@
 // Thin marshalling layer only. All lifetime logic lives in the facade; this
 // file translates types and routes errors. The opaque jlong is a pointer to a
 // heap-allocated IreeRuntime.
+//
+// This is the only translation unit under native/ that includes <jni.h> and
+// sees JNI types (JNIEnv, jobject, jarray, ...); native/core/ works entirely
+// in std/measly types and never touches the JNI API. This file's job is
+// marshalling only -- it converts JVM representations to and from the types
+// declared in core/iree_runtime.h (see that header for the facade's own
+// contracts, which this file relies on rather than restates) and turns a
+// facade std::runtime_error into a Java exception. It performs no IREE work
+// of its own. Every exported JNIEXPORT symbol's mangled name binds it to a
+// specific `native` method declared in org.measly.iree.jni.IreeNative; the
+// two files describe one contract from two sides and must be read together --
+// a name/signature mismatch between them fails at class-load time
+// (UnsatisfiedLinkError), not at compile time.
 #include <jni.h>
 
 #include <memory>
@@ -73,6 +86,13 @@ std::vector<std::string> ToStringVector(JNIEnv* env, jobjectArray array) {
 
 }  // namespace
 
+// Called once when System.loadLibrary loads this library, before any
+// IreeNative method can run. Caches the RuntimeException class as a global
+// reference so ThrowJava() need not FindClass on every failure: FindClass
+// resolves relative to the caller's classloader, which is not reliably
+// reachable from deep in an arbitrary JNI callstack, so doing it once here --
+// in the classloader context JNI_OnLoad itself runs in -- is the only fully
+// reliable place. Returning JNI_ERR aborts the load.
 extern "C" JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void*) {
   JNIEnv* env = nullptr;
   if (vm->GetEnv(reinterpret_cast<void**>(&env), JNI_VERSION_1_8) != JNI_OK) {
@@ -85,6 +105,10 @@ extern "C" JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void*) {
   return JNI_VERSION_1_8;
 }
 
+// Called at most once, only if the classloader that loaded this library is
+// itself ever unloaded (uncommon for the loader that owns a native library in
+// practice). Releases the cached global reference; nothing else in this file
+// holds process-lifetime native state that needs symmetric teardown here.
 extern "C" JNIEXPORT void JNICALL JNI_OnUnload(JavaVM* vm, void*) {
   JNIEnv* env = nullptr;
   if (vm->GetEnv(reinterpret_cast<void**>(&env), JNI_VERSION_1_8) != JNI_OK) return;
@@ -94,6 +118,37 @@ extern "C" JNIEXPORT void JNICALL JNI_OnUnload(JavaVM* vm, void*) {
   }
 }
 
+// Preconditions (see IreeNative.load's javadoc): vmfb, entryPoint, and device
+// non-null; paramScopes/paramPaths non-null, equal length, with no null
+// elements. Every one of these is checked here rather than assumed: this is
+// the entry point from Java, so a caller bug must surface as a Java
+// exception, never a native crash.
+//
+// Allocation/ownership: vmfb's bytes are copied into a local std::vector so
+// GetByteArrayRegion has somewhere to write, then handed to
+// IreeRuntime::Load() as a std::span (Load() copies again internally -- see
+// its header comment -- so this local copy exists only to bridge the JNI
+// array API, not to hand off ownership). On success, Load() heap-allocates a
+// RuntimeState; that allocation's ownership leaves this function as the
+// returned jlong and returns on close(). On any failure path -- here or
+// inside Load() -- nothing is leaked: every local (vectors, the two
+// std::strings, `parameters`) is stack-owned and unwinds normally, and Load()
+// itself throws before transferring ownership of anything to the caller.
+//
+// Local-reference discipline: entryPoint's and device's UTF chars are
+// released via ReleaseStringUTFChars immediately after being copied into a
+// std::string, before any later precondition check that could return early --
+// so no JNI resource here is left depending on reaching the function's end.
+// ToStringVector() explicitly deletes each element's local reference inside
+// its own loop (see its comment) rather than accumulating
+// paramScopes.length + paramPaths.length locals in the default-size local
+// reference table.
+//
+// Error path: an unknown/unavailable driver or a malformed vmfb surfaces as
+// IreeRuntime::Load() throwing std::runtime_error, caught here and turned
+// into a Java RuntimeException via ThrowJava(); 0 is returned alongside it.
+// No partial handle ever escapes a failed load -- runtime.release() only runs
+// after Load() has already succeeded.
 extern "C" JNIEXPORT jlong JNICALL
 Java_org_measly_iree_jni_IreeNative_load(JNIEnv* env, jclass,
                                          jbyteArray vmfb, jstring entryPoint,
@@ -168,6 +223,15 @@ Java_org_measly_iree_jni_IreeNative_load(JNIEnv* env, jclass,
   }
 }
 
+// Precondition (see IreeNative.close's javadoc): handle is either 0 (a
+// no-op -- AsRuntime(0) is nullptr, and delete on nullptr is defined and does
+// nothing) or a value load() returned that has not already been passed here.
+// There is no live-handle registry to check the latter, so a double close, or
+// any other call on a handle after it has been closed, is a native
+// double-free/use-after-free -- undefined behavior, not a checked Java error.
+// Releases everything the runtime owns: session, device, instance (in that
+// order) and the retained vmfb copy -- see ~IreeRuntime(). Never throws; any
+// IREE teardown status is not surfaced.
 extern "C" JNIEXPORT void JNICALL
 Java_org_measly_iree_jni_IreeNative_close(JNIEnv*, jclass, jlong handle) {
   delete AsRuntime(handle);
@@ -177,6 +241,15 @@ Java_org_measly_iree_jni_IreeNative_close(JNIEnv*, jclass, jlong handle) {
 // non-direct buffer (JNI spec). Used by the alignment probe and by the
 // aligned-buffer Cleaner wiring; the JVM guarantees nothing stronger than
 // long (8-byte) alignment for its own direct buffers.
+//
+// Precondition (see IreeNative.bufferAddress's javadoc): buffer is non-null.
+// Unlike invoke() below, which explicitly null-guards the same underlying
+// call before using it (see the `buffer == nullptr` check ahead of
+// GetDirectBufferAddress there), this function passes buffer straight to
+// GetDirectBufferAddress with no null check of its own. Calling this with
+// null is undefined behavior in native code, not a checked Java error. No
+// allocation, no local references beyond the borrowed `buffer` argument, and
+// no error path: this call cannot itself throw.
 extern "C" JNIEXPORT jlong JNICALL
 Java_org_measly_iree_jni_IreeNative_bufferAddress(JNIEnv* env, jclass,
                                                   jobject buffer) {
@@ -187,6 +260,44 @@ Java_org_measly_iree_jni_IreeNative_bufferAddress(JNIEnv* env, jclass,
 // borrowed for exactly the duration of this call, which is what makes the
 // facade's import-or-copy safe: the Java region stays pinned across the
 // boundary for precisely that window.
+//
+// Preconditions (see IreeNative.invoke's javadoc): handle is a still-open
+// handle from load(); inputBuffers/inputShapes/inputTypes are non-null and
+// the same length; every element of inputBuffers is itself a non-null direct
+// ByteBuffer. All of these are checked below rather than assumed, including
+// the per-element buffer check inside the marshalling loop.
+//
+// Allocation/ownership: InvokeViews() leaves its output views live on the
+// runtime rather than handing back owned memory (see its header comment);
+// this function is responsible for turning each view into a JVM-owned direct
+// ByteBuffer (via ByteBuffer.allocateDirect + ReadOutput(), a copy) and then
+// releasing the views with ReleaseOutputs(). Once InvokeViews() has
+// succeeded, every path below reaches ReleaseOutputs() exactly once --
+// success, the 2 GiB-limit throw, and the generic catch block all call it --
+// with one deliberate, documented exception: see the FindClass/GetMethodID
+// lookups a few lines down.
+//
+// Local-reference discipline: inputBuffers[i]'s and inputShapes[i]'s locals
+// from GetObjectArrayElement are never explicitly deleted inside the input
+// loop -- unlike ToStringVector()'s string loop -- because `count` is bounded
+// by the model's own input arity (small, fixed per model) rather than by
+// caller-supplied data of unbounded size, so the default local-ref table is
+// not at risk here. tensor_class, ctor, bb, and allocate are looked up once
+// before the output loop specifically because they are loop-invariant (see
+// the comment ahead of the `bb`/`allocate` lookups); per-output locals
+// (owned, shape, tensor) ARE explicitly deleted at the end of each output
+// iteration, since the output count is caller/model-controlled and looping
+// without deleting them would accumulate one triple of locals per output.
+//
+// Error path: a failure inside InvokeViews() (a failed input import, a failed
+// invoke, or an internal facade error) is caught and turned into a Java
+// RuntimeException via ThrowJava(); no output views exist yet in that case,
+// so there is nothing to release. A failure discovered while building the
+// result array (an output at/above the 2 GiB jsize limit, an allocation
+// failure, or any other std::exception from the facade) both releases the
+// views and either throws explicitly or lets a pending Java exception
+// (OutOfMemoryError) propagate on return, per the comments at each site
+// below.
 extern "C" JNIEXPORT jobjectArray JNICALL
 Java_org_measly_iree_jni_IreeNative_invoke(JNIEnv* env, jclass, jlong handle,
                                            jobjectArray inputBuffers,
@@ -261,6 +372,16 @@ Java_org_measly_iree_jni_IreeNative_invoke(JNIEnv* env, jclass, jlong handle,
     return nullptr;
   }
 
+  // NOTE (documented, not fixed -- see the file's task notes): InvokeViews()
+  // above has already succeeded, so the runtime is now holding output views
+  // that only ReleaseOutputs() will release. Each of these four lookups can
+  // fail (a pending exception, e.g. OutOfMemoryError or NoSuchMethodError)
+  // and returns nullptr WITHOUT calling ReleaseOutputs() first, unlike every
+  // other early return past this point. These are core-JDK class/methodID
+  // lookups with hardcoded signatures; their failure is effectively
+  // JVM-fatal, which is why this is not treated as a caller-visible leak in
+  // practice -- but it is a real gap in the release-on-every-path property
+  // the rest of this function maintains.
   jclass tensor_class = env->FindClass("org/measly/iree/jni/IreeTensor");
   if (tensor_class == nullptr) return nullptr;
   jmethodID ctor = env->GetMethodID(tensor_class, "<init>",
@@ -270,7 +391,8 @@ Java_org_measly_iree_jni_IreeNative_invoke(JNIEnv* env, jclass, jlong handle,
   // Loop-invariant: java/nio/ByteBuffer's class and its allocateDirect
   // methodID don't change per output, so look them up once here rather than
   // inside the loop (avoids per-iteration local-ref accumulation and
-  // redundant lookups).
+  // redundant lookups). Same caveat as tensor_class/ctor above: a failure
+  // here also returns without releasing the pending output views.
   jclass bb = env->FindClass("java/nio/ByteBuffer");
   if (bb == nullptr) return nullptr;
   jmethodID allocate = env->GetStaticMethodID(bb, "allocateDirect",
@@ -362,6 +484,19 @@ Java_org_measly_iree_jni_IreeNative_invoke(JNIEnv* env, jclass, jlong handle,
   }
 }
 
+// Precondition: handle is a still-open handle from load() (see
+// IreeNative.lastImportOutcomes's javadoc); a zero/closed handle throws
+// rather than returning an empty or null result, unlike stats() below, which
+// intentionally never throws.
+//
+// Allocation: reads runtime->lastImportOutcomes(), a view into state the
+// facade retains internally (no facade-side allocation here), and copies it
+// into a freshly allocated jintArray sized to match. No output views are
+// involved, so there is nothing to release on any path.
+//
+// Error path: only the result array's own allocation can fail here (OOM);
+// that failure is left to propagate as a pending Java exception on return,
+// as noted at the call site.
 extern "C" JNIEXPORT jintArray JNICALL
 Java_org_measly_iree_jni_IreeNative_lastImportOutcomes(JNIEnv* env, jclass,
                                                        jlong handle) {
@@ -396,6 +531,14 @@ Java_org_measly_iree_jni_IreeNative_lastImportOutcomes(JNIEnv* env, jclass,
 // AlignedFree is unambiguous. A 64-aligned pointer imports zero-copy into
 // IREE (kWrapped) deterministically, unlike a JVM-allocated direct buffer
 // (see docs/2026-08-04-borrowed-host-buffers-findings.md §4).
+//
+// Precondition: capacity is non-negative (see IreeNative.allocateDirectAligned's
+// javadoc); this is not checked here -- a negative capacity reaches AlignedAlloc
+// via an unsigned cast in the size_t conversion below. Error path: a failed
+// aligned allocation throws before any JNI object exists, so there is nothing to
+// clean up; a failed NewDirectByteBuffer (JVM-side OOM) frees the just-allocated
+// aligned block via AlignedFree before returning, so the native allocation never
+// outlives the failed wrapper -- see the comment at that call below.
 
 extern "C" JNIEXPORT jobject JNICALL
 Java_org_measly_iree_jni_IreeNative_allocateDirectAligned(JNIEnv* env, jclass,
@@ -418,8 +561,9 @@ Java_org_measly_iree_jni_IreeNative_allocateDirectAligned(JNIEnv* env, jclass,
   return buffer;
 }
 
-// Idempotent by contract: called exactly once per buffer, from the Cleaner.
-// 0 is a no-op (bufferAddress of a non-direct buffer).
+// Called exactly once per buffer, from the Cleaner. 0 is a no-op (bufferAddress
+// of a non-direct buffer); a genuine double-free is undefined behavior, not
+// safe to rely on — see IreeNative.freeDirectAligned's javadoc.
 extern "C" JNIEXPORT void JNICALL
 Java_org_measly_iree_jni_IreeNative_freeDirectAligned(JNIEnv*, jclass,
                                                       jlong address) {
@@ -439,6 +583,15 @@ Java_org_measly_iree_jni_IreeNative_aliveAlignedBuffers(JNIEnv*, jclass) {
 // for a closed handle: the caller is a monitoring poll whose contract is that
 // it never throws. Every other entry point in this file throws on a closed
 // handle; this one must not.
+//
+// This function only copies RuntimeStats' fields into the fixed-layout array
+// verbatim -- it applies no sentinel of its own. When statisticsAvailable is
+// false, deviceBytesPeak/deviceBytesLive are the literal 0 the facade reports
+// (see the #else branch in iree_runtime.cpp's Stats()), not a marker value;
+// STAT_STATISTICS_AVAILABLE (index 5 below) is what tells the caller those two
+// entries are meaningless. The "-1 = unavailable" convention some Java callers
+// use is applied one layer above this, in IreeSymbolBlock -- this function and
+// the facade beneath it never produce a negative sentinel.
 extern "C" JNIEXPORT jlongArray JNICALL
 Java_org_measly_iree_jni_IreeNative_stats(JNIEnv* env, jclass, jlong handle) {
   IreeRuntime* runtime = AsRuntime(handle);

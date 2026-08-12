@@ -10,6 +10,7 @@ import ai.djl.training.GradientCollector;
 /** DJL engine backed by the IREE runtime. CPU only, inference only. */
 public final class IreeEngine extends Engine {
 
+    /** The name DJL registers this engine under, and the name {@code Engine.getEngine(...)} takes. */
     public static final String ENGINE_NAME = "IREE";
     static final int RANK = 10;
 

@@ -10,7 +10,16 @@ import java.util.List;
 import java.util.Map;
 import org.measly.iree.jni.IreeNative;
 
-/** Loads a .vmfb (optionally with scope-bound .irpa parameter archives) and owns the native handle. */
+/**
+ * DJL's {@code Model} for this engine: loads a {@code .vmfb} (optionally with scope-bound
+ * {@code .irpa} parameter archives) via {@link ModelResolver} and {@link IreeLoadOptions}, and
+ * owns the native handle for its lifetime.
+ *
+ * <p>{@link #load} does the real work — path resolution, entry-point precedence, the native
+ * {@code IreeNative.load} call, and wiring up the {@link IreeSymbolBlock} that observability
+ * counters attach to. {@link #close()} closes that block, which frees the native session; see
+ * {@link IreeSymbolBlock} for the thread-safety contract this implies for in-flight forwards.
+ */
 public class IreeModel extends BaseModel {
 
     /**

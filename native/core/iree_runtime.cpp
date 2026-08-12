@@ -1,3 +1,9 @@
+// Implementation of the measly::iree facade declared in iree_runtime.h --
+// the middle layer of the JVM -> JNI -> IREE path. This file is where every
+// IREE C API call in the facade actually happens: instance/device/session
+// setup, parameter archive loading, input import/staging, and invoke/output
+// handling. native/jni/ never calls into IREE directly; it only calls the
+// types and functions this file defines.
 #include "core/iree_runtime.h"
 
 #include <atomic>
@@ -30,6 +36,13 @@ bool StatisticsAvailable() {
 #endif
 }
 
+// Teardown ordering: members destruct in reverse declaration order, and that
+// reverse order is what keeps this safe. pendingOutputs (buffer views) and
+// cachedStaging (buffers, further down) release before session; session
+// releases before device; device releases before instance -- each handle
+// only ever tears down after everything that could reference it. Do not
+// reorder these fields without re-checking that this dependency chain still
+// holds; see also the per-field comments below on why vmfb is declared first.
 struct RuntimeState {
   // Owns a copy of the flatbuffer. append_bytecode_module_from_memory with a
   // null allocator does NOT copy, so these bytes must outlive the session.
@@ -123,6 +136,14 @@ std::unique_ptr<IreeRuntime> IreeRuntime::Load(
   state->instance.reset(raw_instance);
 
   iree_hal_device_t* raw_device = nullptr;
+  // Driver selection: "local-sync" (the default) runs the invoke inline on
+  // the calling thread; "local-task" dispatches through a worker pool. Both
+  // are compiled into this linked runtime (see
+  // iree_runtime_instance_options_use_all_available_drivers above), so the
+  // choice is a runtime string, not a build-time one; an unrecognized driver
+  // name is rejected by try_create_default_device below with a thrown
+  // std::runtime_error, not a silent fallback to the default.
+  //
   // Copy into a std::string: std::string_view is not guaranteed null-terminated,
   // so we need a contiguous, sized buffer to hand IREE (same reasoning as
   // entryPoint above) — do not collapse this to iree_make_cstring_view(driver.data()).
@@ -276,6 +297,12 @@ RuntimeStats IreeRuntime::Stats() const {
                                   stats.device_bytes_freed)
           : 0;
 #else
+  // Statistics compiled out: report the literal figure 0, not a sentinel.
+  // statisticsAvailable (set above) is what actually tells the caller these
+  // two fields are meaningless; the "-1 = unavailable" convention some
+  // callers use is applied above this layer (IreeSymbolBlock.toStats() on the
+  // Java side), not here -- this facade only ever reports a real byte count
+  // or 0-because-not-compiled-in, never a negative sentinel of its own.
   out.deviceBytesPeak = 0;
   out.deviceBytesLive = 0;
 #endif
@@ -302,8 +329,15 @@ BufferViewPtr ImportOrCopy(iree_hal_device_t* device,
   params.usage = IREE_HAL_BUFFER_USAGE_DEFAULT | IREE_HAL_BUFFER_USAGE_MAPPING;
   params.access = IREE_HAL_MEMORY_ACCESS_ALL;
 
-  // 1. Try the import. const_cast is safe: params.access is read-only for our
-  //    use and the buffer never escapes Invoke.
+  // 1. Try the import. IREE's own precondition check inside
+  //    iree_hal_allocator_import_buffer is what actually enforces alignment
+  //    (IREE_HAL_HEAP_BUFFER_ALIGNMENT = 64, see aligned_alloc.h) — there is
+  //    no separate alignment check here. A caller buffer from AlignedAlloc
+  //    satisfies it and imports zero-copy; anything else (e.g. a JVM heap
+  //    array, which the JVM guarantees only 8-byte alignment for) fails this
+  //    call and falls through to the staged-copy path below. const_cast is
+  //    safe: params.access is read-only for our use and the buffer never
+  //    escapes Invoke.
   iree_hal_external_buffer_t external = {};
   external.type = IREE_HAL_EXTERNAL_BUFFER_TYPE_HOST_ALLOCATION;
   external.flags = IREE_HAL_EXTERNAL_BUFFER_FLAG_NONE;
