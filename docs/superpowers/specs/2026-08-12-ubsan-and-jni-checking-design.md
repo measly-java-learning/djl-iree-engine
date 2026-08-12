@@ -49,7 +49,11 @@ The work is also a rehearsal. Once validated here it moves to
 
 ## Non-goals
 
-- Code coverage. Separate lever, separate design.
+- Code coverage, the second lever the `iree-org` projects run. Separate design —
+  and note it is already partly adopted here: `jacocoTestReport` is wired at
+  `build.gradle.kts:78` and `:125` (plugins at `:6` and `:8`), with `tasks.test`
+  finalized by it. What is
+  missing is a threshold and the excluded-tag tasks, not the plumbing.
 - Instrumenting the IREE runtime. The pinned dist is an uninstrumented Release
   build of prebuilt archives; only our own translation units get instrumented,
   and dist code inlined into them is ignorelist material, not a fix target.
@@ -88,7 +92,8 @@ failure. Verified on this host's gcc 13.3.
 The gate then runs the JVM suite against that library:
 
 ```
-IREE_LIBRARY_PATH=native/ubsan/libiree_djl.so ./gradlew test --rerun-tasks
+IREE_LIBRARY_PATH=native/ubsan/libiree_djl.so \
+  ./gradlew test leakTest oomTest stressTest --rerun-tasks
 ```
 
 `LibUtils` honours `IREE_LIBRARY_PATH` ahead of the classpath copy and bypasses
@@ -98,14 +103,37 @@ staged into `src/main/resources`, so the instrumented-library trip-wire in
 `CLAUDE.md` never fires and the plain tree stays intact. `--rerun-tasks` is
 required regardless, per the same trip-wire.
 
+#### Why all four task, not just `test`
+
+`tasks.test` (`build.gradle.kts:76`) does `excludeTags("leak", "oom", "stress")`,
+and between them those three tags hold most of what these gates exist to check:
+
+- **`oomTest`** (`build.gradle.kts:114-123`) is a scripted reproduction of issue
+  16 — "JNI output-marshalling failure-contract tests under a constrained heap",
+  `IreeNativeOomTest` at `-Xmx128m` against a 512 MiB splat output. Issue 16's
+  failure scenario was verbatim heap exhaustion partway through marshalling, and
+  this is the only task that drives those allocation-failure paths at all.
+- **`leakTest`** exercises the aligned free/cleaner path under a 256 MiB heap and
+  64 MiB direct memory (`LeakStressTest:83-100` sets `alignedBuffers=true`).
+- **`stressTest`** covers concurrency over the observability snapshot.
+
+The aligned *import* path — the one `-fsanitize=alignment` is here for — is
+already reached under plain `test` via `AddModelIT:74`, which is untagged.
+`leakTest` adds the constrained-memory release path on top rather than being the
+only route to it.
+
 ### Gate C — `-Xcheck:jni`
 
-The JVM's built-in JNI checker, added as a `jvmArgs` entry on the `Test` task in
-`build.gradle.kts`. It runs against the **plain** shipping library on every
-`./gradlew test`: no special build, no new tree, no CI cost.
+The JVM's built-in JNI checker, added as a `jvmArgs` entry on the existing
+`tasks.withType<Test>().configureEach` block at `build.gradle.kts:226` — **not**
+on `tasks.test`. Attaching it to the umbrella is the same single line but covers
+`leakTest`, `oomTest` and `stressTest` automatically, including `oomTest`, where
+it matters most. Attaching it to `tasks.test` alone would never visit the code
+the flag is being added for.
 
-It is the only one of the three that would have caught issue 16, and the only one
-that ports to `djl-executorch-engine` as a single line.
+It runs against the **plain** shipping library: no special build, no new tree, no
+CI cost. It is the only one of the three that would have caught issue 16, and the
+only one that ports to `djl-executorch-engine` as a single line.
 
 ### Resulting coverage
 
@@ -174,9 +202,14 @@ the pinned toolchain images from `431f649` should bake it in the same way.
 
 Baseline locally to green before any CI wiring, cheapest-first:
 
-1. **Gate C.** A one-line change against the existing plain library, and the most
-   likely of the three to find something — it audits every JNI call in a shim
-   that has already yielded three bugs of exactly this class. Fix what it reports
+1. **Gate C**, and within it **`oomTest` first**. A one-line change against the
+   existing plain library, and the most likely of the three to find something — it
+   audits every JNI call in a shim that has already yielded three bugs of exactly
+   this class, and `oomTest` is the task that drives the failure paths those bugs
+   lived on. Expect this to need attention: `-Xcheck:jni` adds its own bookkeeping
+   inside a deliberately 128 MiB heap, so it may shift where the OOM lands, and it
+   aborts the VM on a violation where the test currently expects a clean Java
+   exception. Both are the gate working, not a regression. Fix what it reports
    before moving on.
 2. **Gate A.** Two flags plus the CMake option. Findings are either real UB in
    `iree_djl_core` or inlined dist-header noise destined for the ignorelist.
@@ -188,17 +221,36 @@ Baseline locally to green before any CI wiring, cheapest-first:
 - **Gate A** needs no new job. It rides inside `build_qa.sh`, which
   `.github/workflows/native-build-job.yml:64-70` already runs on both Linux matrix
   rows. The Windows branch is untouched.
-- **Gate C** needs no new job. It rides inside the `./gradlew test` at
-  `.github/workflows/native-build.yml:67`. Being a JVM flag it works on Windows
-  for free.
+- **Gate C** needs no new job. Attached to the `Test` umbrella, it applies to
+  every task in `.github/workflows/native-build.yml:66-68` — today `test` and
+  `leakTest`. Being a JVM flag it works on Windows for free.
 - **Gate B** is the only new step, scoped to **linux-x86_64 only**. A second full
   native build plus a `--rerun-tasks` JVM suite is real CI time, and per the
   primary-platform decision aarch64 gets documented gaps rather than duplicated
   gates.
 
+### `oomTest` and `stressTest` stay local (decided)
+
+Neither runs in CI today, and neither is added by this work. For `oomTest` the
+reason is concrete: it `dependsOn(exportOomFixture)`, which shells out to
+`tools/export_oom_fixture.sh` and needs the pinned pip `iree-compile` — a
+compile-time dependency the Linux native job does not currently carry, and one
+`CLAUDE.md` is explicit about not requiring in order to build or test the engine.
+
+The consequence is worth stating plainly rather than discovering later: **the task
+that reproduces issue 16 is a local gate, not an enforced one.** In CI, Gate C
+covers `test` and `leakTest` only. The failure-contract paths are checked when
+someone runs the full local sequence, and `CONTRIBUTING.md` must document that
+sequence for that reason.
+
+Revisit if the Linux job ever gains `iree-compile` for another reason; nothing in
+this design should be redone to make that possible.
+
 ## Documentation
 
-- `CONTRIBUTING.md`: both gates in the QA section, with invocations.
+- `CONTRIBUTING.md`: both gates in the QA section, with invocations — including
+  the full local sequence (`test leakTest oomTest stressTest`), since `oomTest`
+  and `stressTest` are enforced by nobody but the person running them.
 - `CLAUDE.md`, three trip-wires:
   - The `native/ubsan/` tree must never be staged into `src/main/resources` —
     same hazard as the ASan tree, different flag.
@@ -232,10 +284,13 @@ should:
 - **Gate A / B:** confirm detection with a deliberate, temporary UB expression in
   a QA-only translation unit (for example a misaligned load in the leak harness),
   observe the abort and nonzero exit, then revert. Do not commit the probe.
-- **Gate C:** confirm by temporarily reverting one null check from `5cb8c00` under
-  a forced-allocation-failure path, or by asserting that `-Xcheck:jni` appears in
-  the resolved `Test` task JVM arguments if the failure path proves impractical to
-  trigger.
+- **Gate C:** confirm against `oomTest`, which already drives the
+  allocation-failure paths — temporarily revert one null check from `5cb8c00` and
+  confirm `-Xcheck:jni` aborts where the unchecked build did not. This is a real
+  reproduction rather than a synthetic probe, which is why `oomTest` is the task
+  the verification hangs off. Also assert that `-Xcheck:jni` reaches every `Test`
+  task, not just `test` — that the umbrella attachment worked is the one thing a
+  passing run would not otherwise prove.
 - **Regression safety:** `./native/build.sh` followed by `./gradlew test
   --rerun-tasks` must still pass against the plain library, confirming no
   instrumented artifact leaked into the shipping path.
