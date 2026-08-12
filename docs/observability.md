@@ -2,17 +2,13 @@
 
 The short version lives in [`README.md`](../README.md#observability). This file is the detail:
 what the numbers mean, how JMX behaves when it goes wrong, and why this exists alongside DJL's
-own metrics.
-
-`IreeEngineStats.snapshot()` returns an immutable view of engine configuration, process
-totals, and every live model. It never throws — a monitoring poll must not be the thing that
-breaks production. The README's [Observability](../README.md#observability) section has the
-usage snippet; everything below assumes it.
+own metrics. It assumes you have read that section — what `IreeEngineStats.snapshot()` returns
+and the usage snippet are there and are not repeated here.
 
 ## The staged-import rate
 
-**The staged-import rate is the signal specific to this engine.** IREE imports a host buffer
-zero-copy only when it meets a 64-byte alignment precondition. A Java direct `ByteBuffer`
+IREE imports a host buffer zero-copy only when it meets a 64-byte
+alignment precondition. A Java direct `ByteBuffer`
 does not — the JVM guarantees nothing stronger than 8-byte alignment — so inputs handed
 straight from `NDArray.toByteBuffer()` stage a copy on every call. `stagedImports /
 (stagedImports + wrappedImports)` is how you find out whether that is happening to you.

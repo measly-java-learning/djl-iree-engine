@@ -11,8 +11,8 @@ native library per platform. It is an early library with a deliberately small su
 ## Quickstart
 
 The `add` model below is committed to this repository as a test fixture, so there is nothing
-to compile and no `iree-compile` needed. A JDK 17 and network access are the only
-prerequisites.
+to compile and no `iree-compile` needed. Gradle 8.2 or newer (the Kotlin DSL below uses
+property assignment), a JDK 17 or newer, and network access are the only prerequisites.
 
 ```bash
 mkdir iree-quickstart && cd iree-quickstart
@@ -33,8 +33,6 @@ rootProject.name = "iree-quickstart"
 plugins { application }
 
 repositories { mavenCentral() }
-
-java { toolchain { languageVersion = JavaLanguageVersion.of(17) } }
 
 dependencies {
     implementation("ai.djl:api:0.36.0")
@@ -101,14 +99,23 @@ From a clone of this repository, `example/` exports MobileNetV2 with IREE and ru
 `[1,3,224,224] -> [1,1000]` through the engine:
 
 ```bash
+./native/build.sh                 # build the native library; a fresh clone has none
 ./gradlew :example:exportModels   # writes mobilenet_v2.vmfb into example/build/models/
 ./gradlew :example:run            # runs org.measly.example.MobilenetExample
 ```
 
-`:example:run` depends on `:example:exportModels`, so the second command alone is enough; the
-first is spelled out because it is the slow, network-touching half. The export step needs `uv`
-on `PATH` and network access on first run. See
-[`example/README.md`](example/README.md) for the prerequisites and the `uv` fallback.
+`./native/build.sh` is required and has no substitute in the Gradle build. Unlike the first
+quickstart, `example/` resolves the engine as `project(":")` rather than from Maven Central, so
+it does not get the published classifier jar's prebuilt library — and the library is not
+committed (`.gitignore` excludes `src/main/resources/native/**`). Without this step the example
+fails in `LibUtils` with "Native library not found on the classpath". Set `IREE_LIBRARY_PATH` to
+an existing library to skip it. The build needs CMake, Ninja, and a C++20 compiler; see
+[`CONTRIBUTING.md`](CONTRIBUTING.md) for the full list.
+
+`:example:run` depends on `:example:exportModels`, so the last command alone is enough after the
+native build; the export is spelled out because it is the slow, network-touching half. It needs
+`uv` on `PATH` and network access on first run. See
+[`example/README.md`](example/README.md) for the export prerequisites and the `uv` fallback.
 
 ## Declaring the dependency
 
@@ -174,10 +181,12 @@ library and bypass extraction entirely.
 - **JDK 17** or newer.
 - One of the platforms in the table above.
 
-That is all. IREE itself is statically linked into the shipped library — there is no IREE
-installation, no `iree-compile` on the inference host, and no CMake or C++ toolchain at
-runtime. Those are *build* prerequisites for working on this engine and live in
-[`CONTRIBUTING.md`](CONTRIBUTING.md).
+That is all, **when you consume the published artifact**: IREE itself is statically linked into
+the shipped library, so there is no IREE installation, no `iree-compile` on the inference host,
+and no CMake or C++ toolchain needed to run a model. Building this repository from source is a
+different matter — the native library is not committed and must be built with
+`./native/build.sh`, which is why the second quickstart above starts with it. Those build
+prerequisites live in [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
 ## Loading models
 
