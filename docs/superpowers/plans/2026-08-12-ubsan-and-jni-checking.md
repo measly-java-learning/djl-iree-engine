@@ -72,6 +72,27 @@ Expected: every listed PID's cgroup path contains `run-<id>.scope`. A PID showin
 
 If `systemd-run --user` is unavailable in a given environment (notably inside the CI containers, which have their own limits), say so and fall back to `taskset -c 0-3 timeout 900` alone rather than running unbounded.
 
+### Containers need their own limits — the scope does not reach them
+
+**A `systemd-run --user --scope` wrapped around `docker run` contains nothing that matters.** This host runs the standard root Docker daemon (`docker info` reports no rootless mode), so container processes are children of the daemon's `containerd-shim` in the system slice, not of the invoking shell. The scope bounds only the short-lived `docker run` client. Anything run through `native/local_build_wrapper.sh` — which is the blessed way to run the native scripts, and what Task 4 Step 4 uses — is therefore **unbounded unless the container is limited directly**.
+
+Constrain the container itself:
+
+```bash
+docker run --rm \
+    --memory=8g --memory-swap=8g \
+    --cpuset-cpus=0-3 \
+    ...
+```
+
+- **`--memory=8g`, not 4g.** The container runs a parallel C++ build (including two roughly 16 MB Catch2 test binaries) and, for `ubsan_gate.sh`, Gradle plus four test-task JVMs. The host has 31 GiB total, so 8g is affordable, and 4g risks OOM-killing a legitimate build — which would present as a gate failure rather than as a resource limit, and send the implementer debugging the wrong thing.
+- **`--memory-swap=8g`** (equal to `--memory`) disables swap for the container. Without it Docker grants an equal amount of swap by default, so the limit does not really bind and the box thrashes instead of failing fast.
+- **`--cpuset-cpus=0-3`** mirrors the host `taskset` and caps build parallelism for free: `nproc` inside the container resolves to 4, so `build_qa.sh`'s `JOBS="${JOBS:-$(nproc)}"` and this plan's `-j"$(nproc)"` both follow.
+
+A container OOM kill terminates processes inside the container only. That is the entire point: it converts a host-wide event that takes down Firefox and the agent's shell into a contained, legible build failure.
+
+`docker build` is a separate invocation with its own `--memory` flag, but the Dockerfiles only install a toolchain — they do not compile this project — so it is left alone.
+
 ---
 
 ### Task 1: Gate C — `-Xcheck:jni` on every Test task
@@ -607,6 +628,7 @@ and oomTest is the reproduction of issue 16."
 
 **Files:**
 - Modify: `.github/workflows/native-build-job.yml` (add the Gate B step to the Linux job)
+- Modify: `native/local_build_wrapper.sh:9-12,39` (container memory/CPU limits)
 
 **Interfaces:**
 - Consumes: `native/ubsan_gate.sh` from Task 3; the `IREE_DJL_UBSAN=ON` wiring in `build_qa.sh` from Task 2 (already in CI, no change needed).
@@ -657,7 +679,51 @@ python3 -c "import yaml,sys; yaml.safe_load(open('.github/workflows/native-build
 
 Expected: `YAML OK`.
 
-- [ ] **Step 4: Verify the gate runs under the container locally**
+- [ ] **Step 4: Give the local container wrapper its own memory limit**
+
+A host `systemd-run` scope does not contain a container (see Resource containment above), so `local_build_wrapper.sh` must limit the container itself. Without this, the next step runs a UBSan build plus four test-task JVMs unbounded — the exact shape that has OOM-killed unrelated processes on this host.
+
+In `native/local_build_wrapper.sh`, add above the `docker run` at line 39:
+
+```bash
+# Resource limits for the container. A host-side systemd scope does NOT contain this:
+# dockerd is a root daemon, so container processes are children of containerd-shim in the
+# system slice, not of this shell. A runaway test here has taken down unrelated host
+# processes, so the limit goes on the container or nowhere.
+#   --memory-swap equal to --memory disables swap; without it Docker grants an equal
+#     amount by default and the box thrashes instead of failing fast.
+#   --cpuset-cpus caps parallelism for free: nproc inside resolves to the set's size, so
+#     JOBS="${JOBS:-$(nproc)}" in build_qa.sh follows automatically.
+IR_MEMORY="${IR_MEMORY:-8g}"
+IR_CPUSET="${IR_CPUSET:-0-3}"
+```
+
+and add these three flags to the `docker run` invocation, immediately after `--rm`:
+
+```bash
+    --memory="${IR_MEMORY}" \
+    --memory-swap="${IR_MEMORY}" \
+    --cpuset-cpus="${IR_CPUSET}" \
+```
+
+Also extend the usage comment at lines 9-12 with:
+
+```bash
+#   IR_MEMORY=12g ./native/local_build_wrapper.sh native/ubsan_gate.sh   # raise the cap
+```
+
+- [ ] **Step 5: Verify the limits apply**
+
+```bash
+./native/local_build_wrapper.sh native/build.sh &
+sleep 20
+docker stats --no-stream --format '{{.Name}}: mem={{.MemUsage}} cpu={{.CPUPerc}}'
+wait
+```
+
+Expected: the `MemUsage` column shows a limit of `8GiB`, not the host's total. If it shows the host total, the flags did not apply — fix before continuing, since the next step is the one that runs four JVMs.
+
+- [ ] **Step 6: Verify the gate runs under the container locally**
 
 The CI step runs inside the pinned toolchain image, which needs a JDK for the shim's `find_package(JNI REQUIRED)` and for Gradle. Confirm before trusting the CI step:
 
@@ -667,10 +733,12 @@ The CI step runs inside the pinned toolchain image, which needs a JDK for the sh
 
 Expected: `--- UBSan gate PASS ---`. If the container has no JDK, that is a real blocker for Gate B in CI: report it, and either add the JDK to `docker/linux-x86_64.Dockerfile` in this task or drop the CI step and keep Gate B local, matching the `oomTest` decision. Do not silently skip it.
 
-- [ ] **Step 5: Commit**
+If the container is OOM-killed at 8g (exit 137), report that rather than raising `IR_MEMORY` and moving on: a UBSan build of this tree needing more than 8 GiB is itself a finding.
+
+- [ ] **Step 7: Commit**
 
 ```bash
-git add .github/workflows/native-build-job.yml
+git add .github/workflows/native-build-job.yml native/local_build_wrapper.sh
 git commit -m "ci: run the UBSan shim gate on linux-x86_64
 
 Gates A and C need no CI change -- they ride inside build_qa.sh and the
@@ -678,7 +746,12 @@ existing gradlew test/leakTest invocations. Gate B is the only new step.
 
 TEST_TASKS omits oomTest and stressTest: oomTest needs pip iree-compile
 for its fixture, which this job does not carry, so the issue 16
-reproduction stays a local gate by decision."
+reproduction stays a local gate by decision.
+
+Also caps the local container wrapper at 8 GiB with swap disabled and a
+4-CPU cpuset. A host systemd scope cannot contain a container -- dockerd
+is a root daemon, so its children live in the system slice -- which left
+local container runs as the one unbounded path."
 ```
 
 ---
@@ -830,6 +903,7 @@ Run before claiming the work is done:
 - [ ] `./gradlew javadoc` reports zero warnings.
 - [ ] `git status` shows no `native/ubsan/`, no `native/qa-ubsan-probe/`, no `native/build-clangd/`, no instrumented `.so`, and no leftover UB probes in `iree_leak_harness.cpp` or `iree_djl_jni.cpp`.
 - [ ] Every build and test invocation ran inside a `systemd-run --user --scope` with `--no-daemon` on the Gradle commands, and containment was confirmed at least once via the `/proc/<pid>/cgroup` check. No host-wide OOM kill occurred.
+- [ ] Every container run went through `native/local_build_wrapper.sh` with its `--memory`/`--memory-swap`/`--cpuset-cpus` limits in place, confirmed once via `docker stats`. A host scope does not contain a container, so this is a separate check, not a duplicate of the one above.
 - [ ] The Windows branch of `native/build_qa.sh` is byte-identical to before this work.
 
 ## Deferred, by decision
