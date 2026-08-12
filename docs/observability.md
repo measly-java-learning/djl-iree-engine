@@ -1,9 +1,24 @@
 # Observability
 
+The engine keeps fixed-size counters and gauges for every loaded model — inference latency,
+memory, and how inputs are reaching the runtime — readable in-process or over JMX.
+
+## Why not `ai.djl.metric.Metrics`
+
+DJL's own metrics are a time-series buffer suited to benchmarking, not to always-on monitoring.
+`Metrics.limit` defaults to 0, which means *uncapped*, so every `predict()` retains three
+`Metric` objects indefinitely unless you wire up both `setLimit` and `setOnLimit`. In a
+long-running service that is an unbounded retention of per-call objects.
+
+`IreeEngineStats` is the opposite shape: fixed-size counters and gauges, read on demand, with no
+per-call retention at all. Use `ai.djl.metric.Metrics` for profiling a benchmark run; use
+`IreeEngineStats` for a process you intend to leave running.
+
+## Reading the statistics
+
 `IreeEngineStats.snapshot()` returns an immutable view of engine configuration, process totals,
 and every live model. It never throws: a monitoring poll must not be the thing that breaks
-production. The engine also registers an MXBean at `org.measly.iree:type=IreeEngineStats` on the
-first model load, exposing the same data to any JMX console.
+production.
 
 ```java
 IreeStatsSnapshot stats = IreeEngineStats.snapshot();
@@ -54,8 +69,14 @@ before the model closed.
 
 ## JMX
 
-The engine registers an MXBean at `org.measly.iree:type=IreeEngineStats` on the first model
-load. Disable it with `-Dai.djl.iree.jmx_enabled=false`, or drive it explicitly via
+**JMX is the intended path into an existing monitoring stack.** The engine registers an MXBean
+at `org.measly.iree:type=IreeEngineStats` on the first model load, carrying the same figures as
+`snapshot()`. An MBean is already what the Prometheus JMX exporter and the OpenTelemetry JMX
+receiver consume, so exporting these numbers is a matter of pointing one of those at the
+process — the engine deliberately ships no exporter of its own and no vendor-specific
+integration.
+
+Disable registration with `-Dai.djl.iree.jmx_enabled=false`, or drive it explicitly via
 `IreeEngineStats.registerMBean()` / `IreeEngineStats.unregisterMBean()`.
 
 Registration behavior:
@@ -72,14 +93,3 @@ Registration behavior:
 
 `unregisterMBean()` is equally forgiving: it removes the bean if present, tolerates a race with
 another unregister, and logs rather than throws on anything else.
-
-## Why not `ai.djl.metric.Metrics`
-
-DJL's own metrics are a time-series buffer suited to benchmarking, not to always-on monitoring.
-`Metrics.limit` defaults to 0, which means *uncapped*, so every `predict()` retains three
-`Metric` objects indefinitely unless you wire up both `setLimit` and `setOnLimit`. In a
-long-running service that is an unbounded retention of per-call objects.
-
-`IreeEngineStats` is the opposite shape: fixed-size counters and gauges, read on demand, with no
-per-call retention at all. Use `ai.djl.metric.Metrics` for profiling a benchmark run; use
-`IreeEngineStats` for a process you intend to leave running.
