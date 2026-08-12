@@ -1,3 +1,12 @@
+// Catch2 suite for the measly::iree::IreeRuntime facade (native/core/iree_runtime.h):
+// load/invoke correctness on the golden add fixture, import-outcome (wrapped
+// vs staged) and cached-staging behavior, the view-based InvokeViews/ReadOutput
+// path, Stats()/AliveRuntimeCount() observability, and the error paths Load()
+// and Invoke() throw on. Build and run with:
+//   ./native/build_qa.sh
+//   ./native/build/iree_runtime_test
+// build_qa.sh links ASan+UBSan (see native/CMakeLists.txt), so a case that
+// passes here is also a case LSan has had a chance to catch a leak in.
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators_all.hpp>
 #include <algorithm>
@@ -31,6 +40,9 @@ constexpr const char* kAddVmfb = IREE_DJL_ADD_VMFB;
 constexpr const char* kEntryPoint = "module.add";
 }  // namespace
 
+// Baseline: Load() succeeds on a well-formed vmfb with no parameters and no
+// non-default driver. Every later case in this file builds on this working,
+// so it exists to isolate a Load() regression from the more specific cases.
 TEST_CASE("loads a valid vmfb", "[runtime]") {
   auto bytes = ReadFile(kAddVmfb);
   auto runtime = IreeRuntime::Load(bytes, kEntryPoint);
@@ -471,12 +483,19 @@ TEST_CASE("local-task driver loads and matches local-sync", "[runtime][driver]")
   REQUIRE(r[3] == 44.0f);
 }
 
+// Complements the local-task case above: an unrecognized driver name must
+// fail at Load(), not surface as a null runtime or a crash later at Invoke().
 TEST_CASE("unknown driver fails cleanly at load", "[runtime][driver]") {
   auto bytes = ReadFile(kAddVmfb);
   REQUIRE_THROWS_AS(IreeRuntime::Load(bytes, kEntryPoint, "no-such-driver"),
                     std::runtime_error);
 }
 
+// Stats() must agree with lastImportOutcomes() by a different measurement
+// path: this asserts the wrappedImports COUNTER, not the per-call outcome
+// vector, on inputs already known (from the "aligned host allocation" case
+// above) to import zero-copy. Pre-invoke zero counters rule out counters that
+// are seeded nonzero or that increment on Load() rather than on the import.
 TEST_CASE("Stats counts a wrapped import for an aligned host buffer") {
   auto vmfb = ReadFile(kAddVmfb);
   auto runtime = IreeRuntime::Load(vmfb, kEntryPoint, "local-sync");
@@ -507,6 +526,10 @@ TEST_CASE("Stats counts a wrapped import for an aligned host buffer") {
   measly::iree::AlignedFree(rhs);
 }
 
+// Mirror of the wrapped case above, on the staging fallback: stagedImports
+// must increment and wrappedImports must stay 0 when the import precondition
+// fails. Proves the two counters are mutually exclusive per import, not just
+// that one of them moves.
 TEST_CASE("Stats counts a staged import for a misaligned host buffer") {
   auto vmfb = ReadFile(kAddVmfb);
   auto runtime = IreeRuntime::Load(vmfb, kEntryPoint, "local-sync");
@@ -534,6 +557,11 @@ TEST_CASE("Stats counts a staged import for a misaligned host buffer") {
   measly::iree::AlignedFree(block);
 }
 
+// Stats() is documented as accumulating identically regardless of which
+// invoke entry point ran (see RuntimeStats in iree_runtime.h). Two aligned
+// inputs through Invoke, then the same two through InvokeViews, must add the
+// same +2 each time — a counter wired only into Invoke's code path would
+// stall at 2 after the InvokeViews call.
 TEST_CASE("Stats counters accumulate identically through Invoke and InvokeViews") {
   auto vmfb = ReadFile(kAddVmfb);
   auto runtime = IreeRuntime::Load(vmfb, kEntryPoint, "local-sync");
@@ -594,6 +622,13 @@ TEST_CASE("Stats reports staging bytes that grow then plateau under cached stagi
   measly::iree::AlignedFree(block);
 }
 
+// deviceBytesLive must track the output view's HAL buffer as a normal live
+// allocation: it rises while the view path holds it, and returns to exactly
+// the pre-call baseline once ReleaseOutputs() frees it -- not merely a nonzero
+// intermediate value, but numeric equality with the baseline, which is what
+// rules out a leaked-per-call increment masquerading as "the buffer went
+// away." deviceBytesPeak > 0 confirms the peak is retained even after the
+// live figure drops back down.
 TEST_CASE("Stats reports device bytes returning to baseline after ReleaseOutputs") {
   auto vmfb = ReadFile(kAddVmfb);
   auto runtime = IreeRuntime::Load(vmfb, kEntryPoint, "local-sync");
@@ -621,6 +656,13 @@ TEST_CASE("Stats reports device bytes returning to baseline after ReleaseOutputs
   measly::iree::AlignedFree(rhs);
 }
 
+// AliveRuntimeCount (documented as the JVM/harness leak probe in
+// iree_runtime.h) must move with each construction and destruction, and must
+// nest correctly for two overlapping runtimes -- not just go up once and down
+// once, which would pass even if the count were really tracking Load() calls
+// rather than live instances. A non-zero baseline is tolerated (other cases
+// in this process may hold runtimes via fixtures/generators), so every
+// assertion is baseline-relative.
 TEST_CASE("AliveRuntimeCount tracks runtime construction and destruction") {
   const int64_t baseline = measly::iree::AliveRuntimeCount();
   auto vmfb = ReadFile(kAddVmfb);
@@ -636,6 +678,10 @@ TEST_CASE("AliveRuntimeCount tracks runtime construction and destruction") {
   REQUIRE(measly::iree::AliveRuntimeCount() == baseline);
 }
 
+// A throwing Load() (see "unknown driver fails cleanly at load") must not
+// leave a phantom entry in the live count -- the constructor path
+// (IreeRuntime(unique_ptr<RuntimeState>), per iree_runtime.h) only runs on a
+// fully-constructed state, so a failed Load() should never reach it.
 TEST_CASE("AliveRuntimeCount does not count a failed load") {
   const int64_t baseline = measly::iree::AliveRuntimeCount();
   auto vmfb = ReadFile(kAddVmfb);

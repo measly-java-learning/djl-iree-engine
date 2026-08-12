@@ -6,6 +6,35 @@
 // `local-sync` driver the process stays single-threaded (TSan clean, zero
 // clone/clone3, Threads: 1 per /proc/<pid>/status), which is what keeps the
 // ASan/LSan run deterministic. See docs/superpowers/specs/2026-07-19-djl-iree-engine-findings.md.
+//
+// argv contract: argv[1] is the vmfb path (default IREE_DJL_ADD_VMFB), argv[2]
+// is the cycle count (default 100), argv[3] is the driver selector (default
+// "local-sync"), argv[4] is an optional "scope=path" parameter-archive spec
+// (see the param cycle branch in main() below).
+//
+// This harness, run via native/build_qa.sh under ASan+LSan with local-sync,
+// IS the ASan/LSan go/no-go gate: a leak or a use-after-free anywhere in the
+// facade's retain/release paths fails the build. It is deliberately
+// long-running (hundreds of cycles) rather than single-shot, because a leak
+// that is invisible in one call becomes visible RSS growth or a poisoned
+// region over many.
+//
+// Two operational facts for anyone running this under a different sanitizer:
+// - TSan (native/tsan_gate.sh, local-task only) requires
+//   `setarch $(uname -m) -R` to disable ASLR for the process. TSan's
+//   shadow-memory mapping conflicts with ASLR (the default on this class of
+//   host, /proc/sys/kernel/randomize_va_space = 2); without the setarch
+//   wrapper it dies immediately with "FATAL: ThreadSanitizer: unexpected
+//   memory mapping" before any test code runs.
+// - `local-task` TSan reports are KNOWN FALSE POSITIVES, not a signal to
+//   chase: the pinned dist runtime is an uninstrumented Release build
+//   (variant=default, zero __tsan symbols), and TSan needs whole-program
+//   instrumentation to observe a library's synchronization. It cannot see
+//   IREE's atomics or the task-executor's semaphores, so it flags ordinary
+//   main<->worker submit/execute and refcounted-free handoffs as races even
+//   though the harness completes correctly every run. `local-sync`, by
+//   contrast, ran TSan-clean over 100 cycles with zero clone/clone3 syscalls
+//   observed -- that is the configuration TSan can actually vouch for.
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>

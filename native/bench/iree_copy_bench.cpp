@@ -32,6 +32,18 @@
 // Golden check before timing (out == 2*in on every arm) guards against
 // a fixture mismatch — same trap as the dist add.vmfb in
 // native/test/iree_runtime_test.cpp.
+//
+// The four sizes (4 KiB, 64 KiB, 1 MiB, 16 MiB of f32) sweep from well inside
+// to well outside typical cache levels, so the memcpy floor and the
+// staged-vs-wrapped delta are read as a function of size rather than pinned
+// to one point that might land favorably (or not) on a given host.
+//
+// This binary prints raw per-size numbers on every run; it does not judge
+// them. For the recorded numbers from a real run, and what they say about
+// whether the staged-import cost is worth optimizing away, see
+// docs/2026-08-04-borrowed-host-buffers-findings.md -- read that rather than
+// trusting any figure repeated in a comment here, which will drift out of
+// date the next time the runtime or the host changes.
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
