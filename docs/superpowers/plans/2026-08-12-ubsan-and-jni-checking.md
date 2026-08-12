@@ -13,6 +13,7 @@
 ## Global Constraints
 
 - **JDK 17.** `JAVA_HOME=/usr/lib/jvm/zulu-17-amd64` on this host. Export it before any Gradle or native command.
+- **Gradle cannot run inside the pinned container.** The images set `JAVA_HOME=/opt/corretto-jdk`, which is Corretto **1.8.0_502** — chosen deliberately for the oldest supported `jni.h`. The wrapper is Gradle **9.6.1** and `build.gradle.kts:17` sets a JDK 17 toolchain, so any Gradle invocation in the container fails before it starts. Native builds run in the container; JVM test runs never do. Gate B straddles that line and is split into two phases for exactly this reason.
 - **`./gradlew test` reporting `UP-TO-DATE` has not run anything.** Use `--rerun-tasks` whenever the point is to verify, and check for `N actionable tasks: N executed`.
 - **Never stage an instrumented library into `src/main/resources`.** Gate B's library is reached via `IREE_LIBRARY_PATH` only. After any sanitizer work, rebuild plain with `./native/build.sh` before running JVM tests normally.
 - **UBSan is Linux-only.** MSVC has no UndefinedBehaviorSanitizer. Every Windows code path stays exactly as it is.
@@ -574,6 +575,14 @@ Replace `native/build.sh:74`:
   fi
 ```
 
+Also delete `native/build.sh:72` in the same edit:
+
+```bash
+  export PATH="/opt/python/cp312-cp312/bin:${PATH}"
+```
+
+That path is the manylinux image's interpreter and does not exist on a host — it sits in the *host* branch purely so the adjacent `pip install ninja` resolved to the container's pip. With the install gone it is vestigial, and a nonexistent PATH entry in a host branch is exactly the kind of line that reads as meaningful later.
+
 - [ ] **Step 7: Verify the image is self-consistent**
 
 ```bash
@@ -731,6 +740,12 @@ Create `native/ubsan_gate.sh`:
 # assertion failure. That is the gate working. Look for the "runtime error:" line and its
 # stack trace above the JVM's own crash output.
 #
+# TWO PHASES, because they need different environments. The pinned container has the right
+# toolchain but the wrong JDK (Corretto 8, for the oldest supported jni.h), and Gradle 9.6.1
+# with this project's JDK 17 toolchain cannot run there at all. So: build in the container,
+# test on the host. IREE_DJL_UBSAN_MODE selects a phase; it defaults to `auto`, which is
+# build-only inside the image and both phases outside it.
+#
 # The instrumented .so is NEVER staged into src/main/resources -- it is reached through
 # IREE_LIBRARY_PATH, which LibUtils honours ahead of the classpath copy and which
 # build.gradle.kts already declares as a Test task input. So this script leaves the plain
@@ -744,6 +759,26 @@ cd "${REPO_ROOT}"
 
 BUILD_DIR="${BUILD_DIR:-native/ubsan}"
 JOBS="${JOBS:-$(nproc)}"
+
+# Two phases, because they need different environments and cannot share one.
+#
+#   build  needs gcc + jni.h. Runs happily in the pinned container, which is where the
+#          instrumentation SHOULD be produced: pinned toolchain, pinned libubsan NEVRA.
+#   test   needs Gradle 9.6.1 and a JDK 17 toolchain. The container CANNOT provide that --
+#          its JAVA_HOME is Corretto 1.8.0_502, chosen deliberately for the oldest supported
+#          jni.h -- so the JVM phase runs on the host, against the .so the build phase left
+#          behind.
+#
+# Default is `auto`: build-only inside the pinned image, both phases outside it. The script
+# knows where it is, so no caller has to remember.
+MODE="${IREE_DJL_UBSAN_MODE:-auto}"
+if [ "${MODE}" = "auto" ]; then
+  if [ -n "${IREE_DJL_PINNED_IMAGE:-}" ]; then MODE=build; else MODE=all; fi
+fi
+case "${MODE}" in
+  build|test|all) ;;
+  *) echo "IREE_DJL_UBSAN_MODE must be build, test, all or auto (got '${MODE}')" >&2; exit 1 ;;
+esac
 
 # All four test tasks, not just `test`. tasks.test excludes the leak/oom/stress tags, and
 # oomTest is a scripted reproduction of issue 16 -- the only task that drives the
@@ -761,20 +796,51 @@ GRADLE_FLAGS="${GRADLE_FLAGS:---no-daemon}"
 # makes it abort, and these make the abort legible.
 export UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1
 
-echo "--- Building the UBSan-instrumented shim ---"
-rm -rf "${BUILD_DIR}"
-cmake -S native -B "${BUILD_DIR}" -G "Unix Makefiles" \
-  -DIREE_DJL_UBSAN=ON -DIREE_DJL_BUILD_TESTS=OFF -DCMAKE_BUILD_TYPE=Debug
-cmake --build "${BUILD_DIR}" --target iree_djl -j"${JOBS}"
+if [ "${MODE}" = "build" ] || [ "${MODE}" = "all" ]; then
+  echo "--- Building the UBSan-instrumented shim ---"
+  rm -rf "${BUILD_DIR}"
+  cmake -S native -B "${BUILD_DIR}" -G "Unix Makefiles" \
+    -DIREE_DJL_UBSAN=ON -DIREE_DJL_BUILD_TESTS=OFF -DCMAKE_BUILD_TYPE=Debug
+  cmake --build "${BUILD_DIR}" --target iree_djl -j"${JOBS}"
 
-# A dynamic libubsan dependency means -static-libubsan did not apply, and System.load
-# would fail with a confusing linker error. Assert before running so a failure names its
-# own cause -- the same courtesy native/build_qa.sh extends for the Windows CRT check.
-if ldd "${BUILD_DIR}/libiree_djl.so" | grep -qi ubsan; then
-  echo "FAIL: ${BUILD_DIR}/libiree_djl.so has a dynamic libubsan dependency; -static-libubsan did not apply" >&2
+  # A dynamic libubsan dependency means -static-libubsan did not apply, and System.load
+  # would fail with a confusing linker error. Assert here so a failure names its own cause
+  # -- the same courtesy native/build_qa.sh extends for the Windows CRT check. This matters
+  # more across the phase split: the build may happen in a container and the load on a host
+  # hours later, in a different job.
+  if ldd "${BUILD_DIR}/libiree_djl.so" | grep -qi ubsan; then
+    echo "FAIL: ${BUILD_DIR}/libiree_djl.so has a dynamic libubsan dependency; -static-libubsan did not apply" >&2
+    exit 1
+  fi
+  echo "--- UBSan runtime is statically linked ---"
+fi
+
+if [ "${MODE}" = "build" ]; then
+  echo "--- UBSan shim built at ${BUILD_DIR}/libiree_djl.so; JVM phase skipped ---"
+  echo "--- Run the JVM phase where a JDK 17 lives: IREE_DJL_UBSAN_MODE=test ./native/ubsan_gate.sh ---"
+  exit 0
+fi
+
+# Refuse the JVM phase rather than letting Gradle fail obscurely. The container's JAVA_HOME
+# is Corretto 8; Gradle 9.6.1 and the project's JDK 17 toolchain both need 17+.
+if [ -n "${IREE_DJL_PINNED_IMAGE:-}" ]; then
+  echo "REFUSING the JVM phase inside the pinned image: JAVA_HOME is Corretto 8, and Gradle" >&2
+  echo "9.6.1 with a JDK 17 toolchain cannot run there. Build here, test on the host:" >&2
+  echo "  ./native/local_build_wrapper.sh native/ubsan_gate.sh   # build phase, in-container" >&2
+  echo "  IREE_DJL_UBSAN_MODE=test ./native/ubsan_gate.sh        # JVM phase, on the host" >&2
   exit 1
 fi
-echo "--- UBSan runtime is statically linked ---"
+
+_java_major="$("${JAVA_HOME:-/usr}/bin/java" -version 2>&1 | head -1 | sed -E 's/.*"([0-9]+).*/\1/')"
+if [ "${_java_major:-0}" -lt 17 ]; then
+  echo "JAVA_HOME points at Java ${_java_major}; Gradle 9.6.1 and this project need 17+." >&2
+  exit 1
+fi
+
+if [ ! -f "${BUILD_DIR}/libiree_djl.so" ]; then
+  echo "no instrumented shim at ${BUILD_DIR}/libiree_djl.so -- run the build phase first" >&2
+  exit 1
+fi
 
 echo "--- JVM suite against the instrumented shim (${TEST_TASKS}) ---"
 # --rerun-tasks because a cached UP-TO-DATE result would report a pass for a run that
@@ -831,7 +897,27 @@ git diff --stat native/jni/iree_djl_jni.cpp   # must be empty
 
 Expected: `--- UBSan gate PASS ---`. Any real diagnostic is a finding to fix, not to suppress.
 
-- [ ] **Step 7: Confirm the plain tree still works**
+- [ ] **Step 7: Verify the phase split behaves in both environments**
+
+The split is the part most likely to be subtly wrong, so exercise both refusals rather than only the happy path.
+
+```bash
+# In-container: must build and stop, never reaching Gradle.
+./native/local_build_wrapper.sh native/ubsan_gate.sh 2>&1 | tail -3
+
+# In-container, forced into the JVM phase: must refuse with a legible reason.
+docker run --rm -e IREE_DJL_UBSAN_MODE=test \
+  -v "$(pwd)":/workspace -w /workspace \
+  --memory=8g --memory-swap=8g --cpuset-cpus=0-3 \
+  djl-iree-engine-build:linux-x86_64 /bin/bash /workspace/native/ubsan_gate.sh; echo "exit=$?"
+
+# Host, JVM phase only, against the .so the container just built.
+IREE_DJL_UBSAN_MODE=test ./native/ubsan_gate.sh
+```
+
+Expected, in order: `JVM phase skipped` with the host follow-up printed; then `REFUSING the JVM phase inside the pinned image` and a nonzero exit; then `--- UBSan gate PASS ---`. The third run is also the more valuable configuration in general — instrumentation produced by the pinned toolchain, exercised by a JDK 17 the container cannot host.
+
+- [ ] **Step 8: Confirm the plain tree still works**
 
 The gate must not have disturbed the shipping library.
 
@@ -842,7 +928,7 @@ The gate must not have disturbed the shipping library.
 
 Expected: both succeed, with `N actionable tasks: N executed`. This confirms nothing instrumented leaked into `src/main/resources`.
 
-- [ ] **Step 8: Commit**
+- [ ] **Step 9: Commit**
 
 ```bash
 git add native/CMakeLists.txt native/ubsan_gate.sh native/.gitignore
@@ -854,6 +940,11 @@ UBSan can reach it -- no preload needed, and -static-libubsan folds the
 runtime into the .so so a stock JVM can dlopen it through the existing
 IREE_LIBRARY_PATH seam, staging nothing into resources.
 
+Split into build and test phases: the pinned container has the right
+toolchain but JAVA_HOME is Corretto 8, and Gradle 9.6.1 with this
+project's JDK 17 toolchain cannot start there. Build in the container,
+test on the host; the mode defaults to auto so callers need not care.
+
 Runs all four test tasks: tasks.test excludes the tags oomTest needs,
 and oomTest is the reproduction of issue 16."
 ```
@@ -863,14 +954,17 @@ and oomTest is the reproduction of issue 16."
 ### Task 5: CI wiring
 
 **Files:**
-- Modify: `.github/workflows/native-build-job.yml` (add the Gate B step to the Linux job)
+- Modify: `.github/workflows/native-build-job.yml` (Gate B build phase + artifact upload, Linux x86_64 only)
+- Modify: `.github/workflows/native-build.yml` (Gate B JVM phase in `build-java-package`)
 - Modify: `native/local_build_wrapper.sh:9-12,39` (container memory/CPU limits)
 
 **Interfaces:**
-- Consumes: `native/ubsan_gate.sh` from Task 4; the `IREE_DJL_UBSAN=ON` wiring in `build_qa.sh` from Task 2 (already in CI, no change needed); the baked-in UBSan runtime from Task 3, without which the CI job's UBSan build has no runtime to link.
+- Consumes: `native/ubsan_gate.sh` and its `IREE_DJL_UBSAN_MODE` phase selector from Task 4; the `IREE_DJL_UBSAN=ON` wiring in `build_qa.sh` from Task 2 (already in CI, no change needed); the baked-in UBSan runtime and `IREE_DJL_PINNED_IMAGE` marker from Task 3, without which the build phase has no runtime to link and no way to know it must skip Gradle.
 - Produces: nothing later tasks depend on.
 
-**Scope:** Gates A and C need no CI change at all — Gate A rides inside `build_qa.sh`, which `.github/workflows/native-build-job.yml:64-70` already runs on both Linux matrix rows, and Gate C rides inside the `./gradlew test` and `./gradlew leakTest` at `.github/workflows/native-build.yml:66-68`. Only Gate B needs a new step, on **linux-x86_64 only**.
+**Scope:** Gates A and C need no CI change at all — Gate A rides inside `build_qa.sh`, which `.github/workflows/native-build-job.yml:64-70` already runs on both Linux matrix rows, and Gate C rides inside the `./gradlew test` and `./gradlew leakTest` at `.github/workflows/native-build.yml:66-68`. Gate B is the only new work, on **linux-x86_64 only**, and it spans both workflows.
+
+**Why two jobs.** The container has the pinned toolchain and the pinned libubsan NEVRA, but `JAVA_HOME` is Corretto 1.8.0_502; Gradle 9.6.1 with this project's JDK 17 toolchain cannot start there. The repo already separates these concerns — `build-iree-shim` builds natively in containers and uploads artifacts, `build-java-package` runs on `ubuntu-latest` with `setup-java` 17 and consumes them — so Gate B follows that existing seam rather than fighting it. The alternative, adding a JDK 17 to the images, would undo the deliberate Corretto 8 choice (the oldest supported `jni.h`, matching what the Windows job binds via `JAVA_HOME_8_X64`), bloat a pinned image, and create a `JAVA_HOME` ambiguity in the shipping build. Not worth it to save an artifact round-trip.
 
 - [ ] **Step 1: Confirm Gates A and C are already covered**
 
@@ -881,41 +975,92 @@ grep -n "gradlew" .github/workflows/native-build.yml
 
 Expected: `build_qa.sh` invoked in the Linux job (line ~70) and the Windows job (line ~151); `gradlew build`/`test`/`leakTest` in `native-build.yml`. No edits to either — Gate A and Gate C are inside those invocations already.
 
-- [ ] **Step 2: Add the Gate B step**
+- [ ] **Step 2: Add the Gate B build phase to the container job**
 
-In `.github/workflows/native-build-job.yml`, immediately after the existing "Run native QA gate" step (which ends at line 70), add:
+Gate B cannot be one CI step: the container has the pinned toolchain but Corretto 8, and Gradle 9.6.1 needs 17+. It straddles the two jobs the repo already has — `build-iree-shim` (container matrix, uploads artifacts) and `build-java-package` (`ubuntu-latest`, `setup-java` 17, downloads them). Build in the first, test in the second.
+
+In `.github/workflows/native-build-job.yml`, after the existing "Run native QA gate" step (which ends at line 70), add:
 
 ```yaml
-      # Gate B: the only configuration in which the JNI shim is instrumented. Scoped to
-      # linux-x86_64: a second full native build plus a --rerun-tasks JVM suite is real CI
-      # time, and aarch64 gets documented gaps rather than duplicated gates.
+      # Gate B, phase 1: build the instrumented shim with the pinned toolchain and libubsan
+      # NEVRA. The JVM phase runs in build-java-package, which has a JDK 17 -- this
+      # container's JAVA_HOME is Corretto 8, so Gradle cannot start here at all.
       #
-      # TEST_TASKS omits oomTest and stressTest, which are local-only. oomTest needs the
-      # pinned pip iree-compile for its exportOomFixture dependency, which this job does
-      # not carry -- so the issue 16 reproduction stays a local gate by decision, not by
-      # oversight. See docs/superpowers/specs/2026-08-12-ubsan-and-jni-checking-design.md.
-      - name: Run UBSan gate over the JNI shim (linux-x86_64 only)
+      # Scoped to linux-x86_64: a second native build plus a --rerun-tasks JVM suite is real
+      # CI time, and aarch64 gets documented gaps rather than duplicated gates.
+      - name: Build the UBSan-instrumented shim (linux-x86_64 only)
         if: matrix.platform == 'linux-x86_64'
         run: |
           docker run --rm \
             -v ${{ github.workspace }}:/workspace \
             -w /workspace \
-            -e TEST_TASKS="test leakTest" \
             djl-iree-engine-build:${{ matrix.platform }} \
             /bin/bash /workspace/native/ubsan_gate.sh
+
+      # A DISTINCT artifact name, deliberately outside the `iree-libs-*` pattern that
+      # build-java-package merges into src/main/resources/native/. An instrumented library
+      # landing there would be staged into the shipping resources -- the exact trip-wire
+      # this design exists to avoid -- and would silently become what `./gradlew test` loads.
+      - name: Store the UBSan shim
+        if: matrix.platform == 'linux-x86_64'
+        uses: actions/upload-artifact@v5
+        with:
+          name: iree-ubsan-shim-${{ matrix.platform }}
+          path: native/ubsan/libiree_djl.so
 ```
 
-The `docker run` flags match the two steps above it verbatim (`--rm`, `-v ${{ github.workspace }}:/workspace`, `-w /workspace`, same image tag); the only additions are the `if:` guard and `-e TEST_TASKS`. Passing the task list as an environment variable rather than wrapping the command in `bash -c` keeps the invocation shape identical to its neighbours.
+The `docker run` flags match the two steps above it verbatim; the only addition is the `if:` guard. No `-e IREE_DJL_UBSAN_MODE` is needed — the script's `auto` mode sees `IREE_DJL_PINNED_IMAGE` and builds without attempting Gradle. Match `upload-artifact`'s major version to the "Store libiree_djl shim" step already in this file rather than the `v5` written here.
 
-- [ ] **Step 3: Verify the workflow parses**
+- [ ] **Step 3: Add the Gate B JVM phase to the Java job**
+
+In `.github/workflows/native-build.yml`, in `build-java-package`, after the existing "Build and test the Java package" step:
+
+```yaml
+        # Gate B, phase 2: the JVM suite against the UBSan-instrumented shim built by
+        # build-iree-shim. This job is where a JDK 17 exists; the container that produced the
+        # library cannot run Gradle at all.
+        #
+        # Downloaded OUTSIDE src/main/resources/native/ and reached via IREE_LIBRARY_PATH,
+        # which LibUtils honours ahead of the classpath copy. The instrumented library is
+        # never staged into resources.
+        #
+        # TEST_TASKS omits oomTest and stressTest: oomTest needs the pinned pip iree-compile
+        # for its exportOomFixture dependency, which this job does not carry, so the issue 16
+        # reproduction stays a local gate by decision, not by oversight. See
+        # docs/superpowers/specs/2026-08-12-ubsan-and-jni-checking-design.md.
+        - name: Download the UBSan-instrumented shim
+          uses: actions/download-artifact@v8
+          with:
+            name: iree-ubsan-shim-linux-x86_64
+            path: native/ubsan/
+
+        - name: UBSan gate over the JNI shim
+          env:
+            IREE_DJL_UBSAN_MODE: test
+            TEST_TASKS: "test leakTest"
+          run: ./native/ubsan_gate.sh
+```
+
+- [ ] **Step 4: Verify both workflows parse**
 
 ```bash
-python3 -c "import yaml,sys; yaml.safe_load(open('.github/workflows/native-build-job.yml')); print('YAML OK')"
+python3 -c "import yaml; yaml.safe_load(open('.github/workflows/native-build-job.yml')); print('job YAML OK')"
+python3 -c "import yaml; yaml.safe_load(open('.github/workflows/native-build.yml')); print('build YAML OK')"
 ```
 
-Expected: `YAML OK`.
+Expected: both print OK.
 
-- [ ] **Step 4: Give the local container wrapper its own memory limit**
+- [ ] **Step 5: Confirm the instrumented artifact cannot reach the shipping resources**
+
+The download in `build-java-package` uses `pattern: iree-libs-*` with `merge-multiple: true` into `src/main/resources/native/`. Prove the new artifact name is outside that pattern:
+
+```bash
+grep -n "iree-libs-\|iree-ubsan-shim-\|merge-multiple\|path: src/main/resources" .github/workflows/native-build.yml
+```
+
+Expected: the `iree-libs-*` pattern and the `iree-ubsan-shim-linux-x86_64` name are clearly distinct, and only the former targets `src/main/resources/native/`. If a future rename brings them under one pattern, an instrumented `.so` becomes what every `./gradlew test` loads — silently.
+
+- [ ] **Step 6: Give the local container wrapper its own memory limit**
 
 A host `systemd-run` scope does not contain a container (see Resource containment above), so `local_build_wrapper.sh` must limit the container itself. Without this, the next step runs a UBSan build plus four test-task JVMs unbounded — the exact shape that has OOM-killed unrelated processes on this host.
 
@@ -948,7 +1093,7 @@ Also extend the usage comment at lines 9-12 with:
 #   IR_MEMORY=12g ./native/local_build_wrapper.sh native/ubsan_gate.sh   # raise the cap
 ```
 
-- [ ] **Step 5: Verify the limits apply**
+- [ ] **Step 7: Verify the limits apply**
 
 ```bash
 ./native/local_build_wrapper.sh native/build.sh &
@@ -959,22 +1104,28 @@ wait
 
 Expected: the `MemUsage` column shows a limit of `8GiB`, not the host's total. If it shows the host total, the flags did not apply — fix before continuing, since the next step is the one that runs four JVMs.
 
-- [ ] **Step 6: Verify the gate runs under the container locally**
+- [ ] **Step 8: Rehearse the CI split locally**
 
-The CI step runs inside the pinned toolchain image, which needs a JDK for the shim's `find_package(JNI REQUIRED)` and for Gradle. Confirm before trusting the CI step:
+CI's two phases run in different jobs on different machines, so rehearse them as two separate invocations rather than one local run that hides the seam:
 
 ```bash
+# Phase 1, as build-iree-shim does it: container, auto mode, build only.
 ./native/local_build_wrapper.sh native/ubsan_gate.sh
+test -f native/ubsan/libiree_djl.so && echo "artifact present at the path CI uploads"
+
+# Phase 2, as build-java-package does it: host JDK 17, test mode, CI's task subset.
+IREE_DJL_UBSAN_MODE=test TEST_TASKS="test leakTest" ./native/ubsan_gate.sh
 ```
 
-Expected: `--- UBSan gate PASS ---`. If the container has no JDK, that is a real blocker for Gate B in CI: report it, and either add the JDK to `docker/linux-x86_64.Dockerfile` in this task or drop the CI step and keep Gate B local, matching the `oomTest` decision. Do not silently skip it.
+Expected: phase 1 ends with `JVM phase skipped` and leaves `native/ubsan/libiree_djl.so` — the exact path the upload step names; phase 2 ends with `--- UBSan gate PASS ---`. The `find_package(JNI REQUIRED)` in phase 1 is satisfied by the image's Corretto 8 headers, which is all the shim build ever needed.
 
 If the container is OOM-killed at 8g (exit 137), report that rather than raising `IR_MEMORY` and moving on: a UBSan build of this tree needing more than 8 GiB is itself a finding.
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 9: Commit**
 
 ```bash
-git add .github/workflows/native-build-job.yml native/local_build_wrapper.sh
+git add .github/workflows/native-build-job.yml .github/workflows/native-build.yml \
+        native/local_build_wrapper.sh
 git commit -m "ci: run the UBSan shim gate on linux-x86_64
 
 Gates A and C need no CI change -- they ride inside build_qa.sh and the
@@ -983,6 +1134,13 @@ existing gradlew test/leakTest invocations. Gate B is the only new step.
 TEST_TASKS omits oomTest and stressTest: oomTest needs pip iree-compile
 for its fixture, which this job does not carry, so the issue 16
 reproduction stays a local gate by decision.
+
+Gate B spans two jobs because it must: the container has the pinned
+toolchain but Corretto 8, and Gradle 9.6.1 needs 17+. It builds in
+build-iree-shim and runs the JVM phase in build-java-package, which
+already has setup-java 17. The instrumented library is uploaded under a
+name outside the iree-libs-* pattern so it can never be merged into
+src/main/resources/native/.
 
 Also caps the local container wrapper at 8 GiB with swap disabled and a
 4-CPU cpuset. A host systemd scope cannot contain a container -- dockerd
@@ -1022,6 +1180,19 @@ Then add this prose after the existing `IREE_DJL_SANITIZE`/`IREE_DJL_TSAN` mutua
 `IREE_DJL_UBSAN` is not mutually exclusive with either: UBSan is per-translation-unit and
 local, so it composes with ASan and needs no instrumented runtime. It is Linux-only (MSVC
 has no UndefinedBehaviorSanitizer) and fails fast at configure time on Windows.
+
+`./native/ubsan_gate.sh` runs in two phases, because they need different environments. The
+build phase needs the pinned toolchain and is happiest in the container; the JVM phase needs
+Gradle 9.6.1 and a JDK 17 toolchain, which the container **cannot** provide — its
+`JAVA_HOME` is Corretto 8, chosen deliberately for the oldest supported `jni.h`.
+`IREE_DJL_UBSAN_MODE` selects a phase and defaults to `auto`: build-only inside the pinned
+image, both phases outside it. So a plain host run needs no flags, and the container run
+stops after the build and tells you the follow-up command:
+
+```bash
+./native/local_build_wrapper.sh native/ubsan_gate.sh   # build, pinned toolchain
+IREE_DJL_UBSAN_MODE=test ./native/ubsan_gate.sh        # JVM phase, host JDK 17
+```
 
 **`./native/ubsan_gate.sh` is the only gate that instruments the JNI shim.** The ASan and
 TSan trees skip `native/jni/iree_djl_jni.cpp` to stay JVM-free, which left the file where
@@ -1076,6 +1247,12 @@ Add to the `## Trip-wires` section:
 - **A UB hit under `ubsan_gate.sh` is a JVM hard crash, not a test failure.** `-Xmx`-style
   JVM crash output will dominate; the actual finding is the `runtime error:` line and its
   stack trace above it. Do not read the crash as a flaky test.
+- **Gradle cannot run in the pinned container.** `JAVA_HOME` there is Corretto 1.8.0_502
+  (deliberate: the oldest supported `jni.h`), while the wrapper is Gradle 9.6.1 and
+  `build.gradle.kts` sets a JDK 17 toolchain. Native builds go in the container, JVM runs
+  never do. `ubsan_gate.sh` splits along that line by itself — `IREE_DJL_UBSAN_MODE=auto`
+  builds only when it sees `IREE_DJL_PINNED_IMAGE` — and refuses the JVM phase there rather
+  than letting Gradle fail obscurely.
 - **GCC has no UBSan ignorelist.** `-fsanitize-ignorelist` and `-fsanitize-blacklist` are
   unrecognized options, and `UBSAN_OPTIONS=suppressions=` does not suppress these checks
   (measured, gcc 13.3). Silencing a diagnostic means
@@ -1134,7 +1311,9 @@ Run before claiming the work is done:
 
 - [ ] `./native/build.sh` compiles clean, and `./gradlew test --rerun-tasks` passes against the plain library, showing `N actionable tasks: N executed`.
 - [ ] `./native/build_qa.sh` reports `--- native QA PASS ---` with UBSan active.
-- [ ] `./native/ubsan_gate.sh` reports `--- UBSan gate PASS ---`.
+- [ ] `./native/ubsan_gate.sh` reports `--- UBSan gate PASS ---` on the host, and the container build phase followed by a host `IREE_DJL_UBSAN_MODE=test` run passes as a pair.
+- [ ] The container refuses `IREE_DJL_UBSAN_MODE=test` with a legible message and a nonzero exit, rather than letting Gradle fail against Corretto 8.
+- [ ] The CI artifact name for the instrumented shim is outside the `iree-libs-*` pattern that `build-java-package` merges into `src/main/resources/native/`.
 - [ ] `./gradlew oomTest --rerun-tasks` and `./gradlew stressTest --rerun-tasks` pass under `-Xcheck:jni`.
 - [ ] `./gradlew javadoc` reports zero warnings.
 - [ ] `git status` shows no `native/ubsan/`, no `native/qa-ubsan-probe/`, no `native/build-clangd/`, no instrumented `.so`, and no leftover UB probes in `iree_leak_harness.cpp` or `iree_djl_jni.cpp`.
