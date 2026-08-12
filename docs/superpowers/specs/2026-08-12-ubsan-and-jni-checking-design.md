@@ -186,11 +186,36 @@ to read cold, so `ubsan_gate.sh` states it up front, as `tsan_gate.sh` does for
 ## Suppressions
 
 Diagnostics can fire on IREE dist header code inlined into our translation units,
-which cannot be fixed upstream. Handle this with a compile-time
-`-fsanitize-ignorelist=native/ubsan-ignorelist.txt`, committed empty, with every
-entry carrying a written justification. Compile-time ignorelisting is reliable in
-a way `UBSAN_OPTIONS=suppressions=` is not — the latter covers only a subset of
-checks.
+which cannot be fixed upstream.
+
+**Measured on this host's gcc 13.3, correcting an earlier draft of this
+document:** GCC supports neither `-fsanitize-ignorelist` nor the older
+`-fsanitize-blacklist` — both are rejected as unrecognized options; they are
+clang-only. The runtime fallback does not work either: with
+`UBSAN_OPTIONS=suppressions=<file>` and a `null:<file>` entry, libubsan still
+reported and still exited nonzero. There is therefore **no ignorelist file** in
+this design.
+
+The three mechanisms GCC does offer, in order of preference:
+
+1. **`__attribute__((no_sanitize("undefined")))`** on the specific function.
+   Verified working. Only applies to code we own, but a function of ours that
+   inlines an offending dist header is code we own.
+2. **Per-translation-unit flag override** via CMake
+   `set_source_files_properties(<file> PROPERTIES COMPILE_OPTIONS "-fno-sanitize=<check>")`,
+   when the noise is confined to one TU.
+3. **`-fno-sanitize=<check>`** program-wide. Blunt, and it silently removes a
+   check from the gate, so it is a last resort requiring a comment naming what
+   was given up.
+
+Every use of any of the three carries a written justification at the site. The
+loss relative to a clang ignorelist is real but small at this scale: the surface
+is two source files plus the harness, not a large tree.
+
+Note the interaction with the known clang gap under **Check set** — a future clang
+variant would bring both `implicit-signed-integer-truncation` and a real
+ignorelist. That strengthens the case for the clang follow-on without making it a
+prerequisite.
 
 ## Toolchain
 
@@ -255,8 +280,9 @@ this design should be redone to make that possible.
   - The `native/ubsan/` tree must never be staged into `src/main/resources` —
     same hazard as the ASan tree, different flag.
   - A UB hit under Gate B presents as a JVM crash, not a test failure.
-  - Every `ubsan-ignorelist.txt` entry needs a written justification, or it
-    silently becomes permanent.
+  - GCC has no UBSan ignorelist. Suppression happens per-function or per-TU and
+    needs a written justification at the site, or a check silently leaves the
+    gate.
 
 Per repo style, no emoji in any of it.
 
@@ -284,13 +310,17 @@ should:
 - **Gate A / B:** confirm detection with a deliberate, temporary UB expression in
   a QA-only translation unit (for example a misaligned load in the leak harness),
   observe the abort and nonzero exit, then revert. Do not commit the probe.
-- **Gate C:** confirm against `oomTest`, which already drives the
-  allocation-failure paths — temporarily revert one null check from `5cb8c00` and
-  confirm `-Xcheck:jni` aborts where the unchecked build did not. This is a real
-  reproduction rather than a synthetic probe, which is why `oomTest` is the task
-  the verification hangs off. Also assert that `-Xcheck:jni` reaches every `Test`
-  task, not just `test` — that the umbrella attachment worked is the one thing a
-  passing run would not otherwise prove.
+- **Gate C:** verification is that the flag is *active*, not that it fires.
+  `IreeNativeOomTest`'s own javadoc is explicit that the null-check branches added
+  by the fix "are not deterministically reachable: they need heap exhaustion
+  mid-loop, and the 512 MiB output fails first at the already-checked
+  `ByteBuffer.allocateDirect`." So a revert-the-fix probe is not reliably
+  reproducible and must not be the acceptance criterion. Instead assert
+  `-Xcheck:jni` is present in `RuntimeMXBean.getInputArguments()` from within the
+  test JVM, in a form that runs under **every** `Test` task — that the umbrella
+  attachment worked is the one thing a passing suite would not otherwise prove.
+  A manual revert probe remains available as an opportunistic confirmation; it is
+  not a gate.
 - **Regression safety:** `./native/build.sh` followed by `./gradlew test
   --rerun-tasks` must still pass against the plain library, confirming no
   instrumented artifact leaked into the shipping path.
