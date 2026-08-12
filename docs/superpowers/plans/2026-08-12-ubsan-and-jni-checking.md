@@ -22,6 +22,55 @@
 - **No emoji** in `README.md`, `CONTRIBUTING.md`, `CLAUDE.md`, or anything under `docs/`.
 - **`./gradlew javadoc` must stay at zero warnings.** Any new public Java type needs javadoc.
 - **Never commit** `native/build-clangd/`, an instrumented `.so`/`.dll`, or the temporary UB probes this plan uses for verification.
+- **Every build and test command in this plan runs under the resource-containment wrapper below.** Not optional: this plan runs `oomTest`, which exhausts a heap on purpose.
+
+---
+
+## Resource containment (required)
+
+A runaway test on this project and on `djl-executorch-engine` has more than once triggered a host-wide OOM kill that took down unrelated processes — typically Firefox and the shell hosting the agent. This plan is unusually exposed to that: `oomTest` drives allocation failure deliberately, `stressTest` is a concurrency suite, and Tasks 2 and 3 run parallel native builds. Contain every build and test invocation:
+
+```bash
+# Prefix for any build or test command in this plan.
+systemd-run --user --scope -p MemoryMax=4G taskset -c 0-3 timeout 900 bash -c '<cmd>'
+```
+
+`taskset -c 0-3` also caps build parallelism for free: `nproc` honours CPU affinity, so `-j"$(nproc)"` inside the scope resolves to 4 rather than 8 (measured on this host).
+
+**Gradle escapes this, and must be handled explicitly.** The Gradle daemon is a long-lived process in whatever cgroup it was first started in. If one is already running, `./gradlew` connects to it and the real work — including every forked test JVM — happens in *that* daemon's scope, outside the one you just created. `gradle.properties:5` sets `org.gradle.parallel=true`, so worker processes fork on top of the test JVMs, compounding it. Before any Gradle command in this plan:
+
+```bash
+./gradlew --stop     # kill any daemon living outside the scope
+```
+
+and run Gradle inside the scope with `--no-daemon`, so the build executes in the CLI process itself and forked test JVMs inherit its cgroup as children:
+
+```bash
+systemd-run --user --scope -p MemoryMax=4G taskset -c 0-3 timeout 900 \
+  bash -c './gradlew --no-daemon test --rerun-tasks'
+```
+
+**Verify containment once, at the start**, rather than assuming it held:
+
+```bash
+# In one terminal, inside the scope:
+systemd-run --user --scope -p MemoryMax=4G taskset -c 0-3 timeout 900 \
+  bash -c './gradlew --no-daemon test --rerun-tasks'
+
+# In another, while it runs -- the test JVM must name a run-*.scope:
+pgrep -f 'GradleWorkerMain|GradleDaemon' | while read -r pid; do
+  printf '%s: %s\n' "$pid" "$(cat /proc/"$pid"/cgroup)"
+done
+```
+
+Expected: every listed PID's cgroup path contains `run-<id>.scope`. A PID showing `app.slice` or a bare user slice has escaped — stop, run `./gradlew --stop`, and confirm `--no-daemon` is on the command line.
+
+**Two adjustments to the defaults:**
+
+- **`timeout 900` is too short for a cold native build.** Task 2 and Task 3 configure from scratch, and `FetchContent` pulls the pinned runtime tarball (and Catch2, for the QA tree) before compiling. Use `timeout 1800` for the first `./native/build.sh`, `./native/build_qa.sh` and `./native/ubsan_gate.sh` of a session; 900 is fine once the trees are warm.
+- **`MemoryMax=4G` bounds the whole scope, not each JVM.** `ubsan_gate.sh` runs four test tasks in sequence, and `oomTest` deliberately pushes to its `-Xmx128m` ceiling — well inside 4G. If the scope OOMs anyway, that is a finding about the gate, not a reason to raise the cap: report it rather than retrying with `MemoryMax=8G`.
+
+If `systemd-run --user` is unavailable in a given environment (notably inside the CI containers, which have their own limits), say so and fall back to `taskset -c 0-3 timeout 900` alone rather than running unbounded.
 
 ---
 
@@ -140,9 +189,14 @@ Expected: PASS. Confirm the output shows `N actionable tasks: N executed`, not `
 
 Per the spec's rollout order, `oomTest` is the task most likely to need attention: `-Xcheck:jni` adds bookkeeping inside a deliberate 128 MiB heap, so it may shift where the OOM lands, and it aborts the VM on a violation where the test expects a clean `OutOfMemoryError`.
 
+This is the single most dangerous step in the plan for the host — `oomTest` exhausts a heap on purpose. Run it contained, and note the `--no-daemon`:
+
 ```bash
-./gradlew oomTest --rerun-tasks
-./gradlew test leakTest stressTest --rerun-tasks
+./gradlew --stop
+systemd-run --user --scope -p MemoryMax=4G taskset -c 0-3 timeout 900 \
+  bash -c './gradlew --no-daemon oomTest --rerun-tasks'
+systemd-run --user --scope -p MemoryMax=4G taskset -c 0-3 timeout 900 \
+  bash -c './gradlew --no-daemon test leakTest stressTest --rerun-tasks'
 ```
 
 Expected: all pass. `oomTest` requires the pinned pip `iree-compile` on PATH for its `exportOomFixture` dependency.
@@ -440,6 +494,12 @@ JOBS="${JOBS:-$(nproc)}"
 # run in CI, so this local sequence is the only place they meet an instrumented shim.
 TEST_TASKS="${TEST_TASKS:-test leakTest oomTest stressTest}"
 
+# --no-daemon is not a preference. A pre-existing Gradle daemon lives in whatever cgroup it
+# was first started in, so `./gradlew` would hand the work -- including every forked test
+# JVM -- to a process outside any resource scope wrapping this script. oomTest exhausts a
+# heap on purpose; letting that escape has taken down unrelated processes on this host.
+GRADLE_FLAGS="${GRADLE_FLAGS:---no-daemon}"
+
 # UBSan's default is print-and-continue; -fno-sanitize-recover (native/CMakeLists.txt)
 # makes it abort, and these make the abort legible.
 export UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1
@@ -463,7 +523,7 @@ echo "--- JVM suite against the instrumented shim (${TEST_TASKS}) ---"
 # --rerun-tasks because a cached UP-TO-DATE result would report a pass for a run that
 # never loaded this library.
 IREE_LIBRARY_PATH="$(pwd)/${BUILD_DIR}/libiree_djl.so" \
-  ./gradlew ${TEST_TASKS} --rerun-tasks
+  ./gradlew ${GRADLE_FLAGS} ${TEST_TASKS} --rerun-tasks
 
 echo "--- UBSan gate PASS ---"
 ```
@@ -497,8 +557,9 @@ Temporarily add a deliberate UB expression at the top of `Java_org_measly_iree_j
 Then:
 
 ```bash
-./native/ubsan_gate.sh
-echo "exit=$?"
+./gradlew --stop
+systemd-run --user --scope -p MemoryMax=4G taskset -c 0-3 timeout 1800 \
+  bash -c './native/ubsan_gate.sh'; echo "exit=$?"
 ```
 
 Expected: a `runtime error: shift exponent 99 is too large` diagnostic naming `iree_djl_jni.cpp`, a JVM crash, and a **nonzero** exit from the script. This is the proof that the shim is genuinely instrumented and that a hit fails the gate — the single most important verification in this plan, since Gate B exists only to cover this file.
@@ -768,6 +829,7 @@ Run before claiming the work is done:
 - [ ] `./gradlew oomTest --rerun-tasks` and `./gradlew stressTest --rerun-tasks` pass under `-Xcheck:jni`.
 - [ ] `./gradlew javadoc` reports zero warnings.
 - [ ] `git status` shows no `native/ubsan/`, no `native/qa-ubsan-probe/`, no `native/build-clangd/`, no instrumented `.so`, and no leftover UB probes in `iree_leak_harness.cpp` or `iree_djl_jni.cpp`.
+- [ ] Every build and test invocation ran inside a `systemd-run --user --scope` with `--no-daemon` on the Gradle commands, and containment was confirmed at least once via the `/proc/<pid>/cgroup` check. No host-wide OOM kill occurred.
 - [ ] The Windows branch of `native/build_qa.sh` is byte-identical to before this work.
 
 ## Deferred, by decision
