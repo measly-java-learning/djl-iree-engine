@@ -24,7 +24,7 @@ fi
 
 
 # This script expects:
-# 1. To be running inside the pinned toolchain image (docker/<platform>.Dockerfile), which
+# 1. To be running inside the pinned shared toolchain image (see .engine-build-image), which
 #    bakes the glibc-2.28 floor via its manylinux_2_28 base and supplies JAVA_HOME + ninja
 # 2. Failing that, a manylinux_2_28 base with amazon-corretto-linux-jdk.rpm at /workspace
 # The runtime tarball is fetched by CMake during the shim configure (also inside the container,
@@ -40,7 +40,7 @@ if [ "${IR_HOST_OS}" = "windows" ]; then
     || { echo "JDK headers not found under JAVA_HOME=${JAVA_HOME} (expected include/win32/jni_md.h)"; exit 1; }
   echo "JAVA_HOME=${JAVA_HOME}"
 else
-  # Fast path: the pinned toolchain image (docker/linux-*.Dockerfile) bakes the Corretto 8 headers
+  # Fast path: the pinned shared toolchain image (see .engine-build-image) bakes the Corretto 8
   # in and exports JAVA_HOME, so there is nothing to extract. The fallback below is for running
   # this script directly on a host, or inside a bare manylinux base — in which case you supply
   # amazon-corretto-linux-jdk.rpm at the repo root yourself.
