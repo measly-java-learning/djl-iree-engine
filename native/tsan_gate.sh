@@ -2,25 +2,30 @@
 # TSan gate for the local-task worker pool. NOT a GitHub CI job: TSan needs ASLR
 # disabled (setarch -R), unavailable on GitHub-hosted container runners.
 #
-# STATUS (2026-07-22): BLOCKED — this has reported FALSE POSITIVES on the first observed
-# iteration in every run to date (a measured result, not a construction guarantee), not a
-# passing gate. TSan needs the whole program instrumented, but the iree-runtime-dist `default`
-# artifact is an uninstrumented Release build (BUILDINFO: variant=default,
-# CMAKE_BUILD_TYPE=Release; zero __tsan symbols in lib/*.a). So TSan cannot see IREE's own
-# synchronization (iree_atomic, task-executor semaphores, resource-set refcounts) and flags
-# the normal main<->worker submit/execute and refcounted-free handoffs as races. The harness
-# itself completes correctly every run. This becomes a REAL gate only once the dist ships a
-# TSan-instrumented runtime variant.
-#   Tracking: https://github.com/measly-java-learning/iree-runtime-dist/issues/9
+# This is a REAL gate: a report here is a finding, not noise. Treat a non-zero exit as a
+# failure to triage.
 #
-# Kept in the tree because the wiring is correct and ready: the moment an instrumented
-# runtime variant exists, this script is the gate. It drives the leak harness with
-# local-task so IREE's worker pool actually runs — the only configuration where TSan could
-# find a race. The ASan/LSan gate (native/build_qa.sh) stays local-sync/deterministic and
-# IS enforced.
+# What makes it real is -DIREE_RUNTIME_VARIANT=tsan below. TSan needs the whole program
+# instrumented; against the shipping `default` runtime (an uninstrumented Release build,
+# zero __tsan symbols) it could not see IREE's own synchronization — iree_atomic, the
+# task-executor semaphores, resource-set refcounts — and reported every normal
+# main<->worker handoff as a race. The pin now carries a `tsan` variant of the same release
+# built with -fsanitize=thread, so those handoffs are visible and the gate runs clean.
+# CMake refuses the mismatched pairings (see native/CMakeLists.txt) rather than letting a
+# run look enforced while measuring nothing.
 #
-# NOTE: until #9 is resolved this script EXITS NON-ZERO (TSan's exit code) on the documented
-# false positives — that is expected, not a gate failure. See STATUS above before reacting.
+# It drives the leak harness with local-task so IREE's worker pool actually runs — the only
+# configuration where a race is reachable. The ASan/LSan gate (native/build_qa.sh) stays
+# local-sync/deterministic.
+#
+# Remaining limits, both about coverage rather than correctness:
+#   - Linux only, and not a GitHub CI job (see the ASLR note above). Nothing enforces this
+#     automatically; it is a local gate someone has to run.
+#   - The dist is clang-built and the shim here is built by the host compiler. The TSan
+#     runtime ABI is shared, so the mix links and runs, but the two halves are instrumented
+#     by different compilers.
+#   - Only the vmfb the harness loads is exercised. A race in a code path no fixture reaches
+#     is still invisible.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -29,7 +34,8 @@ cd "${REPO_ROOT}"
 ITERS="${ITERS:-500}"
 BUILD_DIR="${BUILD_DIR:-native/tsan}"
 
-cmake -S native -B "${BUILD_DIR}" -DIREE_DJL_TSAN=ON -DCMAKE_BUILD_TYPE=Debug \
+cmake -S native -B "${BUILD_DIR}" -DIREE_DJL_TSAN=ON -DIREE_RUNTIME_VARIANT=tsan \
+  -DCMAKE_BUILD_TYPE=Debug \
   -DCMAKE_CXX_FLAGS="-fsanitize=thread -fno-omit-frame-pointer -g" \
   -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=thread"
 cmake --build "${BUILD_DIR}" --target iree_leak_harness

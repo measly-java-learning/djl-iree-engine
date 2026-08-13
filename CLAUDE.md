@@ -55,10 +55,16 @@ Not an exhaustive task list — see `CONTRIBUTING.md` for everything else.
 - **TSan needs `setarch $(uname -m) -R`.** TSan's shadow-memory mapping conflicts with ASLR;
   without disabling it for that one process, the harness dies immediately with `FATAL:
   ThreadSanitizer: unexpected memory mapping`.
-- **`local-task` TSan reports are known false positives**, not a new bug — the dist runtime is
-  an uninstrumented Release build with no `__tsan` symbols, so TSan cannot see IREE's internal
-  synchronization and flags normal worker handoffs as races. Correctness there is covered by
-  Catch2 and the JVM suite, not by TSan.
+- **`local-task` TSan reports are real findings.** `native/tsan_gate.sh` links the pin's
+  `tsan` runtime variant (`-DIREE_RUNTIME_VARIANT=tsan`), which is instrumented, so TSan sees
+  IREE's own synchronization instead of flagging normal worker handoffs. The gate runs clean;
+  do not dismiss a report as a known false positive. Note the older writeups in `docs/` that
+  predate the variant — they describe the uninstrumented state.
+- **The runtime variant and `IREE_DJL_TSAN` must agree.** `IREE_RUNTIME_VARIANT` (`default` |
+  `tsan`) picks which pinned tarball gets fetched; CMake fails at configure time on either
+  mismatch, because a `tsan` runtime will not load outside a TSan process and a `default` one
+  makes the gate measure nothing. There is no `tsan` row for `windows-x86_64` — MSVC has no
+  ThreadSanitizer.
 - **Never commit `native/build-clangd/`.** Every entry carries absolute paths — build tree,
   fetched runtime include dir, host JDK, fixture paths. It also goes stale silently: it will
   report phantom compile errors in `native/test/*.cpp` that do not exist in a real build.

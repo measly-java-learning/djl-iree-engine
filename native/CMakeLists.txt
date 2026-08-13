@@ -44,7 +44,54 @@ if(WIN32)
       "Static CRT: ship without a VC++ redist")
 endif()
 
-iree_runtime_dist_url("default" "${IREE_DJL_PLATFORM}" _iree_runtime_url _iree_runtime_sha)
+# The sanitizer switches are declared here, above the runtime fetch, rather than
+# beside the flag blocks they drive: the runtime-variant guard below has to read
+# them, and by the time the pin is resolved the choice of tarball is already made.
+option(IREE_DJL_SANITIZE "Build with ASan/LSan" OFF)
+option(IREE_DJL_TSAN "Build with ThreadSanitizer" OFF)
+option(IREE_DJL_UBSAN "Build with UndefinedBehaviorSanitizer" OFF)
+
+# ASan and TSan are mutually exclusive -- never enable both at once. Checked
+# immediately after both options are declared and before either flag block
+# below, so generation fails before any conflicting flags are ever applied.
+if(IREE_DJL_SANITIZE AND IREE_DJL_TSAN)
+  message(FATAL_ERROR "IREE_DJL_SANITIZE (ASan) and IREE_DJL_TSAN are mutually exclusive; enable at most one.")
+endif()
+
+# Rejected here rather than at the flag block below, so the Windows answer is
+# "there is no ThreadSanitizer" and not the pin's "no tsan row for
+# windows-x86_64" -- the same fact, but only one of them is actionable. Keyed on
+# the platform rather than WIN32 so it also catches the host-test seam
+# (-DIREE_DJL_PLATFORM=windows-x86_64 configured from Linux).
+if(IREE_DJL_TSAN AND IREE_DJL_PLATFORM MATCHES "^windows")
+  message(FATAL_ERROR "IREE_DJL_TSAN is unsupported on Windows: MSVC has no ThreadSanitizer")
+endif()
+
+# Which flavour of the pinned runtime to link. `default` is the shipping
+# artifact and the only one build.sh ever wants; `tsan` is the same release
+# built with -fsanitize=thread, which TSan needs in order to see IREE's own
+# synchronization instead of reporting the worker handoffs as races.
+#
+# Mixing them is always a mistake in one direction or the other, so reject the
+# unsatisfiable pairings here with a message naming the fix, rather than letting
+# it surface as a pin lookup failure (no `tsan` row exists for windows-x86_64)
+# or, worse, as a silently useless gate run.
+set(IREE_RUNTIME_VARIANT "default" CACHE STRING
+    "iree-runtime-dist variant to link: default | tsan")
+
+if(IREE_RUNTIME_VARIANT STREQUAL "tsan" AND NOT IREE_DJL_TSAN)
+  message(FATAL_ERROR
+    "IREE_RUNTIME_VARIANT=tsan links a -fsanitize=thread runtime, which only loads into a "
+    "TSan-instrumented process. Set -DIREE_DJL_TSAN=ON, or leave the variant at 'default'.")
+endif()
+if(IREE_DJL_TSAN AND NOT IREE_RUNTIME_VARIANT STREQUAL "tsan")
+  message(FATAL_ERROR
+    "IREE_DJL_TSAN=ON with IREE_RUNTIME_VARIANT=${IREE_RUNTIME_VARIANT} instruments only our own "
+    "code; TSan then reports IREE's internal synchronization as races. "
+    "Set -DIREE_RUNTIME_VARIANT=tsan (see native/tsan_gate.sh).")
+endif()
+
+iree_runtime_dist_url("${IREE_RUNTIME_VARIANT}" "${IREE_DJL_PLATFORM}" _iree_runtime_url _iree_runtime_sha)
 
 include(FetchContent)
 FetchContent_Declare(iree_runtime_dist
@@ -98,10 +145,6 @@ else()
   set(IREE_DJL_FIXTURE_DIR "${CMAKE_CURRENT_LIST_DIR}/../src/test/resources/models")
 endif()
 
-option(IREE_DJL_SANITIZE "Build with ASan/LSan" OFF)
-option(IREE_DJL_TSAN "Build with ThreadSanitizer" OFF)
-option(IREE_DJL_UBSAN "Build with UndefinedBehaviorSanitizer" OFF)
-
 # The check set, as a cache variable so a one-off run can narrow it without
 # editing this file. Two additions over GCC's `undefined` umbrella, which
 # deliberately excludes both: float-cast-overflow and float-divide-by-zero, each
@@ -111,13 +154,6 @@ option(IREE_DJL_UBSAN "Build with UndefinedBehaviorSanitizer" OFF)
 # check most likely to misfire against the uninstrumented dist.
 set(IREE_DJL_UBSAN_CHECKS "undefined,float-cast-overflow,float-divide-by-zero"
     CACHE STRING "UBSan check set passed to -fsanitize=")
-
-# ASan and TSan are mutually exclusive -- never enable both at once. Checked
-# immediately after both options are declared and before either flag block
-# below, so generation fails before any conflicting flags are ever applied.
-if(IREE_DJL_SANITIZE AND IREE_DJL_TSAN)
-  message(FATAL_ERROR "IREE_DJL_SANITIZE (ASan) and IREE_DJL_TSAN are mutually exclusive; enable at most one.")
-endif()
 
 if(IREE_DJL_SANITIZE)
   if(WIN32)
@@ -129,13 +165,10 @@ if(IREE_DJL_SANITIZE)
   endif()
 endif()
 
+# Windows is already rejected above, next to the variant guard.
 if(IREE_DJL_TSAN)
-  if(WIN32)
-    message(FATAL_ERROR "IREE_DJL_TSAN is unsupported on Windows: MSVC has no ThreadSanitizer")
-  else()
-    add_compile_options(-fsanitize=thread -fno-omit-frame-pointer -g)
-    add_link_options(-fsanitize=thread)
-  endif()
+  add_compile_options(-fsanitize=thread -fno-omit-frame-pointer -g)
+  add_link_options(-fsanitize=thread)
 endif()
 
 # UBSan composes with ASan -- unlike the ASan/TSan pair above, which is mutually
