@@ -68,25 +68,27 @@ else
     *) echo "unsupported arch: $(uname -m)" >&2; exit 1 ;;
   esac
 
-  # Sanitizer runtimes. In the pinned image these are baked in at an exact NEVRA (see
-  # docker/*.Dockerfile); a missing one means a BROKEN IMAGE, and installing it here at
-  # whatever version dnf offers would silently defeat the pinning the image exists to
-  # provide. So: assert inside the image, install only outside it, and never silently.
-  if [ -n "${IREE_DJL_PINNED_IMAGE:-}" ]; then
-    # The marker without its companions means either a hand-set IREE_DJL_PINNED_IMAGE or an
-    # image predating the ENV block in docker/*.Dockerfile. Say so: under `set -u` the bare
-    # dereference below would abort with bash's "unbound variable", which is the one path
-    # through this block that would NOT produce the legible message it exists to give.
-    : "${IREE_DJL_TOOLSET_VER:?IREE_DJL_PINNED_IMAGE is set but IREE_DJL_TOOLSET_VER is not -- rebuild the image from docker/*.Dockerfile, or unset the marker for a host run}"
-    : "${IREE_DJL_TOOLSET_NEVRA:?IREE_DJL_PINNED_IMAGE is set but IREE_DJL_TOOLSET_NEVRA is not -- rebuild the image from docker/*.Dockerfile, or unset the marker for a host run}"
+  # Sanitizer runtimes. In the pinned image these are baked in at an exact NEVRA (the image
+  # publishes it as MEASLY_DJL_TOOLSET_NEVRA); a missing one means a BROKEN IMAGE, and
+  # installing it here at whatever version dnf offers would silently defeat the pinning the
+  # image exists to provide. So: assert inside the image, install only outside it, and never
+  # silently.
+  if [ -n "${MEASLY_DJL_PINNED_IMAGE:-}" ]; then
+    # The marker without its companions means either a hand-set MEASLY_DJL_PINNED_IMAGE or an
+    # image predating those variables. Say so: under `set -u` the bare dereference below would
+    # abort with bash's "unbound variable", which is the one path through this block that would
+    # NOT produce the legible message it exists to give.
+    : "${MEASLY_DJL_TOOLSET_VER:?MEASLY_DJL_PINNED_IMAGE is set but MEASLY_DJL_TOOLSET_VER is not -- check the pin in .engine-build-image, or unset the marker for a host run}"
+    : "${MEASLY_DJL_TOOLSET_NEVRA:?MEASLY_DJL_PINNED_IMAGE is set but MEASLY_DJL_TOOLSET_NEVRA is not -- check the pin in .engine-build-image, or unset the marker for a host run}"
     for _san in asan ubsan; do
-      _pkg="gcc-toolset-${IREE_DJL_TOOLSET_VER}-lib${_san}-devel-${IREE_DJL_TOOLSET_NEVRA}"
+      _pkg="gcc-toolset-${MEASLY_DJL_TOOLSET_VER}-lib${_san}-devel-${MEASLY_DJL_TOOLSET_NEVRA}"
       if ! rpm -q --quiet "${_pkg}"; then
         echo "BROKEN IMAGE: ${_pkg} is not installed at the pinned NEVRA." >&2
-        echo "Rebuild the image (docker/${IR_PLATFORM:-linux-$(uname -m)}.Dockerfile); do not install it here." >&2
+        echo "The image is published by measly-java-learning/base-docker-images; check the pin in" >&2
+        echo ".engine-build-image rather than installing it here." >&2
         exit 1
       fi
-      echo "--- ${_san} runtime present at pinned ${IREE_DJL_TOOLSET_NEVRA} ---"
+      echo "--- ${_san} runtime present at pinned ${MEASLY_DJL_TOOLSET_NEVRA} ---"
     done
   else
     # Not the pinned image. Probe for what actually matters -- can this toolchain LINK a
