@@ -69,6 +69,32 @@ jobs:
             djl-iree-engine-build:${{ matrix.platform }} \
             /bin/bash /workspace/native/build_qa.sh
 
+      # Gate B, phase 1: build the instrumented shim with the pinned toolchain and libubsan
+      # NEVRA. The JVM phase runs in build-java-package, which has a JDK 17 -- this
+      # container's JAVA_HOME is Corretto 8, so Gradle cannot start here at all.
+      #
+      # Scoped to linux-x86_64: a second native build plus a --rerun-tasks JVM suite is real
+      # CI time, and aarch64 gets documented gaps rather than duplicated gates.
+      - name: Build the UBSan-instrumented shim (linux-x86_64 only)
+        if: matrix.platform == 'linux-x86_64'
+        run: |
+          docker run --rm \
+            -v ${{ github.workspace }}:/workspace \
+            -w /workspace \
+            djl-iree-engine-build:${{ matrix.platform }} \
+            /bin/bash /workspace/native/ubsan_gate.sh
+
+      # A DISTINCT artifact name, deliberately outside the `iree-libs-*` pattern that
+      # build-java-package merges into src/main/resources/native/. An instrumented library
+      # landing there would be staged into the shipping resources -- the exact trip-wire
+      # this design exists to avoid -- and would silently become what `./gradlew test` loads.
+      - name: Store the UBSan shim
+        if: matrix.platform == 'linux-x86_64'
+        uses: actions/upload-artifact@v7
+        with:
+          name: iree-ubsan-shim-${{ matrix.platform }}
+          path: native/ubsan/libiree_djl.so
+
       - name: Store libiree_djl shim
         id: shim-upload-step
         uses: actions/upload-artifact@v7

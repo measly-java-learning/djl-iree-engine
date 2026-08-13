@@ -68,19 +68,55 @@ else
     *) echo "unsupported arch: $(uname -m)" >&2; exit 1 ;;
   esac
 
-  # QA is the only ASan consumer. The pinned toolchain image bakes the runtime in at the base
-  # image's own compiler revision; this dnf call is the fallback for host runs and bare bases.
-  TOOLSET_VER="$(gcc -dumpversion | cut -d. -f1)"
-  if rpm -q --quiet "gcc-toolset-${TOOLSET_VER}-libasan-devel"; then
-    echo "--- ASan runtime already present (gcc-toolset-${TOOLSET_VER}-libasan-devel) ---"
-  elif command -v dnf >/dev/null 2>&1; then
-    echo "--- Installing ASan runtime (dnf), may appear to hang ---"
-    dnf install -y -q "gcc-toolset-${TOOLSET_VER}-libasan-devel" || true
+  # Sanitizer runtimes. In the pinned image these are baked in at an exact NEVRA (see
+  # docker/*.Dockerfile); a missing one means a BROKEN IMAGE, and installing it here at
+  # whatever version dnf offers would silently defeat the pinning the image exists to
+  # provide. So: assert inside the image, install only outside it, and never silently.
+  if [ -n "${IREE_DJL_PINNED_IMAGE:-}" ]; then
+    # The marker without its companions means either a hand-set IREE_DJL_PINNED_IMAGE or an
+    # image predating the ENV block in docker/*.Dockerfile. Say so: under `set -u` the bare
+    # dereference below would abort with bash's "unbound variable", which is the one path
+    # through this block that would NOT produce the legible message it exists to give.
+    : "${IREE_DJL_TOOLSET_VER:?IREE_DJL_PINNED_IMAGE is set but IREE_DJL_TOOLSET_VER is not -- rebuild the image from docker/*.Dockerfile, or unset the marker for a host run}"
+    : "${IREE_DJL_TOOLSET_NEVRA:?IREE_DJL_PINNED_IMAGE is set but IREE_DJL_TOOLSET_NEVRA is not -- rebuild the image from docker/*.Dockerfile, or unset the marker for a host run}"
+    for _san in asan ubsan; do
+      _pkg="gcc-toolset-${IREE_DJL_TOOLSET_VER}-lib${_san}-devel-${IREE_DJL_TOOLSET_NEVRA}"
+      if ! rpm -q --quiet "${_pkg}"; then
+        echo "BROKEN IMAGE: ${_pkg} is not installed at the pinned NEVRA." >&2
+        echo "Rebuild the image (docker/${IR_PLATFORM:-linux-$(uname -m)}.Dockerfile); do not install it here." >&2
+        exit 1
+      fi
+      echo "--- ${_san} runtime present at pinned ${IREE_DJL_TOOLSET_NEVRA} ---"
+    done
+  else
+    # Not the pinned image. Probe for what actually matters -- can this toolchain LINK a
+    # sanitized binary -- rather than asking a package manager about a package name. The
+    # probe is distro-agnostic (the previous rpm/dnf version was dead code on Ubuntu, which
+    # is what both the workstation and the GitHub runner run: rpm is command-not-found and
+    # `command -v dnf` is false, so the whole block was a silent no-op that had never run).
+    # This script installs nothing: an install here would be unpinned by construction.
+    echo "--- WARNING: not the pinned image; toolchain versions are unpinned and results are not comparable ---"
+    _probe="$(mktemp -d)"
+    printf 'int main(){return 0;}\n' > "${_probe}/probe.cpp"
+    for _san in address undefined; do
+      if ! "${CXX:-g++}" -fsanitize="${_san}" "${_probe}/probe.cpp" -o "${_probe}/probe" 2>/dev/null; then
+        echo "cannot link -fsanitize=${_san} with ${CXX:-g++}; install your toolchain's sanitizer runtime" >&2
+        echo "  Debian/Ubuntu: it ships with gcc (libasan/libubsan); try reinstalling g++" >&2
+        echo "  RHEL family:   gcc-toolset-<N>-lib{asan,ubsan}-devel" >&2
+        rm -rf "${_probe}"
+        exit 1
+      fi
+    done
+    rm -rf "${_probe}"
+    echo "--- asan and ubsan runtimes link (unpinned host toolchain) ---"
   fi
 
   JOBS="${JOBS:-$(nproc)}"
   rm -rf native/qa
-  cmake -B native/qa -S native -G "Unix Makefiles" -DIREE_DJL_SANITIZE=ON \
+  # UBSan's default is print-and-continue; -fno-sanitize-recover (set in
+  # native/CMakeLists.txt) makes it abort, and these make the abort legible.
+  export UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1
+  cmake -B native/qa -S native -G "Unix Makefiles" -DIREE_DJL_SANITIZE=ON -DIREE_DJL_UBSAN=ON \
     -DCMAKE_BUILD_TYPE=Debug \
     -DCMAKE_CXX_FLAGS="-fsanitize=address -fno-omit-frame-pointer -g" \
     -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address"

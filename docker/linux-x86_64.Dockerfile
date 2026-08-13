@@ -21,13 +21,32 @@ FROM quay.io/pypa/manylinux_2_28_x86_64:2026.06.04-1
 #                      to match the base image's own compiler exactly (gcc 14.2.1-11); a libasan
 #                      from a different toolset revision than the gcc that emitted the
 #                      instrumentation is the classic source of confusing ASan link errors.
-#                      build_qa.sh still derives the toolset number from `gcc -dumpversion` and
-#                      dnf-installs as a fallback, which is a fast no-op here and keeps host runs
-#                      working.
+#                      build_qa.sh asserts these NEVRAs via rpm -q against the image's pins and
+#                      installs nothing; outside the image it probes that the host toolchain can
+#                      link -fsanitize=address/undefined.
+# gcc-toolset-14-libubsan-devel  the UBSan runtime for native/build_qa.sh and
+#                      native/ubsan_gate.sh. Same NEVRA as libasan above and for the same
+#                      reason: it must match the gcc that emitted the instrumentation.
 RUN dnf install -y \
       gcc-toolset-14-libasan-devel-14.2.1-11.el8_10 \
+      gcc-toolset-14-libubsan-devel-14.2.1-11.el8_10 \
     && dnf clean all \
     && rm -rf /var/cache/dnf
+
+# The scripts assert against these rather than installing anything: presence of
+# IREE_DJL_PINNED_IMAGE means "you are in the pinned image, a missing tool is a broken image,
+# not something to fix at run time". Keep the NEVRA here identical to the dnf line above --
+# this is the single source of truth, and native/build_qa.sh reads it from the environment.
+ENV IREE_DJL_PINNED_IMAGE=1
+ENV IREE_DJL_TOOLSET_VER=14
+ENV IREE_DJL_TOOLSET_NEVRA=14.2.1-11.el8_10
+# IREE_DJL_NINJA_VERSION is the version string the pip ninja wheel's binary
+# reports (`ninja --version`), NOT the pip package metadata version: pip
+# installs ninja==1.13.0 (pin unchanged), but the Kitware jobserver-pipe wheel
+# prints "1.13.0.git.kitware.jobserver-pipe-1". Both this image's assertion
+# below and native/build.sh compare exactly against `ninja --version` output,
+# so this must be the reported string, not the metadata version.
+ENV IREE_DJL_NINJA_VERSION=1.13.0.git.kitware.jobserver-pipe-1
 
 # The base ships no ninja, and native/build.sh configures with -G Ninja, so every build paid a
 # `pip install ninja` before this. cp312 is the interpreter native/build.sh already puts on PATH.
@@ -72,4 +91,10 @@ RUN test -f "${JAVA_HOME}/include/jni.h" \
       || { echo "JAVA_HOME=${JAVA_HOME} has no include/linux/jni_md.h"; exit 1; } \
     && command -v ninja >/dev/null \
       || { echo "ninja is not on PATH"; exit 1; } \
-    && ninja --version
+    && ninja --version \
+    && rpm -q "gcc-toolset-${IREE_DJL_TOOLSET_VER}-libasan-devel-${IREE_DJL_TOOLSET_NEVRA}" \
+      || { echo "libasan NEVRA not installed as pinned"; exit 1; } \
+    && rpm -q "gcc-toolset-${IREE_DJL_TOOLSET_VER}-libubsan-devel-${IREE_DJL_TOOLSET_NEVRA}" \
+      || { echo "libubsan NEVRA not installed as pinned"; exit 1; } \
+    && test "$(ninja --version)" = "${IREE_DJL_NINJA_VERSION}" \
+      || { echo "ninja is $(ninja --version), expected ${IREE_DJL_NINJA_VERSION}"; exit 1; }

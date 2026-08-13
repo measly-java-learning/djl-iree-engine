@@ -30,6 +30,7 @@ Not an exhaustive task list — see `CONTRIBUTING.md` for everything else.
 ./native/build.sh                  # build the shim, stage it into src/main/resources
 ./gradlew test                     # JVM suite, against the plain (non-instrumented) library
 ./native/build_qa.sh               # native Catch2 + leak-harness QA, stages into native/qa/
+./native/ubsan_gate.sh             # UBSan over the JNI shim, driven by the JVM suite
 ./gradlew :example:exportModels    # exports mobilenet_v2.vmfb for the example module
 ```
 
@@ -73,6 +74,28 @@ Not an exhaustive task list — see `CONTRIBUTING.md` for everything else.
   extracted to a temp file. `IREE_LIBRARY_PATH` wins and bypasses extraction entirely.
 - **`IreeDataTypes.java` is generated** by `buildSrc/src/main/kotlin/IreeDataTypeCodegen.kt`.
   Editing the generated output directly does nothing — it is overwritten on the next build.
+- **`native/ubsan/` must never be staged into `src/main/resources`.** Same hazard as the
+  ASan tree, different flag. `./native/ubsan_gate.sh` reaches its instrumented `.so`
+  through `IREE_LIBRARY_PATH` instead, so — unlike the ASan and TSan gates — it leaves the
+  plain tree alone and needs no rebuild afterwards.
+- **A UB hit under `ubsan_gate.sh` is a JVM hard crash, not a test failure.** `-Xmx`-style
+  JVM crash output will dominate; the actual finding is the `runtime error:` line and its
+  stack trace above it. Do not read the crash as a flaky test.
+- **Gradle cannot run in the pinned container.** `JAVA_HOME` there is Corretto 1.8.0_502
+  (deliberate: the oldest supported `jni.h`), while the wrapper is Gradle 9.6.1 and
+  `build.gradle.kts` sets a JDK 17 toolchain. Native builds go in the container, JVM runs
+  never do. `ubsan_gate.sh` splits along that line by itself — `IREE_DJL_UBSAN_MODE=auto`
+  builds only when it sees `IREE_DJL_PINNED_IMAGE` — and refuses the JVM phase there rather
+  than letting Gradle fail obscurely.
+- **GCC has no UBSan ignorelist.** `-fsanitize-ignorelist` and `-fsanitize-blacklist` are
+  unrecognized options, and `UBSAN_OPTIONS=suppressions=` does not suppress these checks
+  (measured, gcc 13.3). Silencing a diagnostic means
+  `__attribute__((no_sanitize("undefined")))` on the function, a per-TU
+  `set_source_files_properties` override, or `-fno-sanitize=<check>` — each needs a comment
+  naming what was given up, or a check silently leaves the gate.
+- **`oomTest` and `stressTest` do not run in CI.** `oomTest` needs pip `iree-compile` for
+  its fixture. It is the only reproduction of issue 16's allocation-failure paths, so the
+  JNI failure contract is verified only when someone runs the full local sequence.
 
 ## Before claiming done
 

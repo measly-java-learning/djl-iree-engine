@@ -40,6 +40,10 @@ linkable library, which is exactly why the dist artifact exists.
 JAVA_HOME=/usr/lib/jvm/zulu-17-amd64 ./gradlew test    # JVM tests
 ```
 
+Every test task runs with `-Xcheck:jni`. If the JVM aborts with a JNI warning rather than a
+test failure, that is the checker catching a contract violation in the shim — see Native QA
+below.
+
 The JVM suite lives under `src/test/java/org/measly/iree/`. If you are orienting yourself, the
 core functional path is `IreeNativeTest` (JNI boundary, including the scale/scale2
 parameter-archive loads), `AddModelIT` (the implicit bare-`.vmfb` door), `ModelManifestTest`
@@ -64,9 +68,9 @@ The wrapper picks the image from `uname -m` (`docker/linux-x86_64.Dockerfile` or
 `docker/linux-aarch64.Dockerfile`) and builds it first; Docker's layer cache makes that a
 near-instant no-op after the first run. The images carry the Corretto 8 JNI headers, so the
 shipped library is always compiled against the JDK 8 floor whatever the host has. The same
-Dockerfiles back the CI matrix (`.github/workflows/warm-build-image.yml`). `build.sh` and
-`build_qa.sh` chown their outputs back to you on exit; other `native/` scripts run through the
-wrapper do not yet, and leave root-owned directories behind.
+Dockerfiles back the CI matrix (`.github/workflows/warm-build-image.yml`). `build.sh`,
+`build_qa.sh` and `ubsan_gate.sh` chown their outputs back to you on exit; other `native/`
+scripts run through the wrapper do not yet, and leave root-owned directories behind.
 
 Windows x86_64 is built in CI only (`build-iree-shim-windows` in
 `.github/workflows/native-build-job.yml`, on `windows-2022`, under an MSVC dev shell); there is
@@ -125,6 +129,14 @@ rm -rf native/build && ./native/build.sh -DIREE_DJL_SANITIZE=ON
 ASAN_OPTIONS=detect_leaks=1 ./native/build/iree_leak_harness "" 200
 ASAN_OPTIONS=detect_leaks=1 ./native/build/iree_leak_harness "" 400
 
+# UBSan gate over the native QA tree (composes with ASan; both run in ./native/build_qa.sh):
+rm -rf native/build && ./native/build.sh -DIREE_DJL_SANITIZE=ON -DIREE_DJL_UBSAN=ON
+UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1 ./native/build/iree_leak_harness "" 200
+
+# UBSan gate over the JNI shim, driven by the JVM suite. The ONLY configuration that
+# instruments native/jni/iree_djl_jni.cpp. Runs all four test tasks:
+./native/ubsan_gate.sh
+
 # TSan over local-sync (single-threaded; clean, measured — see below):
 rm -rf native/build && ./native/build.sh -DIREE_DJL_TSAN=ON
 setarch $(uname -m) -R ./native/build/iree_leak_harness "" 100 local-sync
@@ -140,6 +152,45 @@ ThreadSanitizer: unexpected memory mapping` without it.
 
 `IREE_DJL_SANITIZE` (ASan) and `IREE_DJL_TSAN` are mutually exclusive; enabling both fails
 fast at CMake configure time with a clear error rather than a cryptic compiler failure.
+
+`IREE_DJL_UBSAN` is not mutually exclusive with either: UBSan is per-translation-unit and
+local, so it composes with ASan and needs no instrumented runtime. It is Linux-only (MSVC
+has no UndefinedBehaviorSanitizer) and fails fast at configure time on Windows.
+
+`./native/ubsan_gate.sh` runs in two phases, because they need different environments. The
+build phase needs the pinned toolchain and is happiest in the container; the JVM phase needs
+Gradle 9.6.1 and a JDK 17 toolchain, which the container **cannot** provide — its
+`JAVA_HOME` is Corretto 8, chosen deliberately for the oldest supported `jni.h`.
+`IREE_DJL_UBSAN_MODE` selects a phase and defaults to `auto`: build-only inside the pinned
+image, both phases outside it. So a plain host run needs no flags, and the container run
+stops after the build and tells you the follow-up command:
+
+```bash
+./native/local_build_wrapper.sh native/ubsan_gate.sh   # build, pinned toolchain
+IREE_DJL_UBSAN_MODE=test ./native/ubsan_gate.sh        # JVM phase, host JDK 17
+```
+
+**`./native/ubsan_gate.sh` is the only gate that instruments the JNI shim.** The ASan and
+TSan trees skip `native/jni/iree_djl_jni.cpp` to stay JVM-free, which left the file where
+issues 15, 16 and 17 all lived uncovered by any sanitizer. UBSan can reach it because it
+needs no runtime preload: `-static-libubsan` folds its runtime into the `.so`, and the gate
+points the JVM at it through `IREE_LIBRARY_PATH` rather than staging it into resources — so
+unlike the ASan and TSan gates, **it does not require rebuilding the plain `.so`
+afterwards**. A UB hit presents as a JVM hard crash mid-test, not a test failure; look for
+the `runtime error:` line above the JVM's crash output.
+
+The gate runs `test leakTest oomTest stressTest`, not just `test`: `tasks.test` excludes the
+`leak`, `oom` and `stress` tags, and `oomTest` is a scripted reproduction of issue 16 — the
+only task that drives the output-marshalling allocation-failure paths. `oomTest` needs the
+pinned pip `iree-compile` on PATH for its `exportOomFixture` dependency, which is why it and
+`stressTest` run locally only; CI covers `test` and `leakTest`. **Run the full local
+sequence before claiming the JNI boundary is verified** — CI does not check those paths.
+
+Every JVM test task also runs under `-Xcheck:jni`, the JVM's own JNI-contract checker,
+attached to the `Test` task umbrella in `build.gradle.kts`. It catches the class UBSan
+cannot see: JNI calls made with a pending exception, and null array arguments — issue 16
+exactly. It runs against the plain shipping library, so it costs nothing and needs no
+special build.
 
 **Operational note:** either sanitizer build stages an instrumented `libiree_djl.so` into
 the JVM resources directory. That instrumented `.so` breaks `./gradlew test` (e.g. "ASan

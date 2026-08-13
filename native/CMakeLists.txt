@@ -100,6 +100,17 @@ endif()
 
 option(IREE_DJL_SANITIZE "Build with ASan/LSan" OFF)
 option(IREE_DJL_TSAN "Build with ThreadSanitizer" OFF)
+option(IREE_DJL_UBSAN "Build with UndefinedBehaviorSanitizer" OFF)
+
+# The check set, as a cache variable so a one-off run can narrow it without
+# editing this file. Two additions over GCC's `undefined` umbrella, which
+# deliberately excludes both: float-cast-overflow and float-divide-by-zero, each
+# reachable in element-count and scale arithmetic. vptr comes off below: it needs
+# every TU holding a polymorphic object instrumented, and the RAII handles in
+# core/iree_handles.h are non-polymorphic, so it buys nothing here and is the
+# check most likely to misfire against the uninstrumented dist.
+set(IREE_DJL_UBSAN_CHECKS "undefined,float-cast-overflow,float-divide-by-zero"
+    CACHE STRING "UBSan check set passed to -fsanitize=")
 
 # ASan and TSan are mutually exclusive -- never enable both at once. Checked
 # immediately after both options are declared and before either flag block
@@ -125,6 +136,33 @@ if(IREE_DJL_TSAN)
     add_compile_options(-fsanitize=thread -fno-omit-frame-pointer -g)
     add_link_options(-fsanitize=thread)
   endif()
+endif()
+
+# UBSan composes with ASan -- unlike the ASan/TSan pair above, which is mutually
+# exclusive. It is also per-TU and local: each check is an inline test emitted at
+# the operation, with no cross-module state, so linking the uninstrumented dist
+# produces no false positives and hides nothing in our own code.
+#
+# -fno-sanitize-recover is what makes this a gate rather than a log: UBSan's
+# default is print-and-continue, under which CI stays green while diagnostics
+# scroll past.
+#
+# NOTE: GCC has no ignorelist -- -fsanitize-ignorelist and -fsanitize-blacklist
+# are both unrecognized, and UBSAN_OPTIONS=suppressions= does not suppress these
+# checks (measured, gcc 13.3). To silence a diagnostic, use
+# __attribute__((no_sanitize("undefined"))) on the function, a per-TU
+# set_source_files_properties COMPILE_OPTIONS override, or -fno-sanitize=<check>
+# here -- each with a comment naming what was given up and why.
+if(IREE_DJL_UBSAN)
+  if(WIN32)
+    message(FATAL_ERROR "IREE_DJL_UBSAN is unsupported on Windows: MSVC has no UndefinedBehaviorSanitizer")
+  endif()
+  add_compile_options(
+      -fsanitize=${IREE_DJL_UBSAN_CHECKS}
+      -fno-sanitize=vptr
+      -fno-sanitize-recover=undefined
+      -fno-omit-frame-pointer -g)
+  add_link_options(-fsanitize=${IREE_DJL_UBSAN_CHECKS})
 endif()
 
 # Link smoke test (Task 1)
@@ -216,9 +254,15 @@ target_compile_definitions(iree_leak_harness PRIVATE
 add_executable(iree_copy_bench bench/iree_copy_bench.cpp)
 target_link_libraries(iree_copy_bench PRIVATE iree_djl_core)
 
-# JNI shim (Task 7): thin marshalling layer over iree_djl_core. Skipped under any
-# sanitizer: sanitized builds are QA-only, never shipped, and JVM-free — so they must
-# not require a JDK. The Catch2 units and the leak harness link iree_djl_core directly.
+# JNI shim (Task 7): thin marshalling layer over iree_djl_core. Skipped under ASan and
+# TSan: those builds are QA-only, never shipped, and JVM-free -- so they must not require
+# a JDK. The Catch2 units and the leak harness link iree_djl_core directly.
+#
+# UBSan is the exception, and deliberately so. It needs no runtime preload, and
+# -static-libubsan folds its runtime into the .so, so a stock JVM can dlopen the result
+# with no LD_PRELOAD and no "ASan runtime does not come first". That makes the shim --
+# where issues 15, 16 and 17 all lived -- reachable by a sanitizer for the first time.
+# native/ubsan_gate.sh builds exactly this configuration and drives it with the JVM suite.
 if(NOT IREE_DJL_SANITIZE AND NOT IREE_DJL_TSAN)
   find_package(JNI REQUIRED)
   add_library(iree_djl SHARED jni/iree_djl_jni.cpp)
@@ -227,5 +271,10 @@ if(NOT IREE_DJL_SANITIZE AND NOT IREE_DJL_TSAN)
   # Hide IREE's symbols so they cannot collide with anything else in the JVM.
   if(NOT WIN32)
     target_link_options(iree_djl PRIVATE -Wl,--exclude-libs,ALL)
+  endif()
+  # Statically link the UBSan runtime so the JVM needs no preload. Without this the .so
+  # carries an undefined dependency on libubsan.so and System.load fails.
+  if(IREE_DJL_UBSAN)
+    target_link_options(iree_djl PRIVATE -static-libubsan)
   endif()
 endif()

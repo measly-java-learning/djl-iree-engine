@@ -67,3 +67,27 @@ jobs:
               ./gradlew test
               ./gradlew leakTest
 
+        # Gate B, phase 2: the JVM suite against the UBSan-instrumented shim built by
+        # build-iree-shim. This job is where a JDK 17 exists; the container that produced the
+        # library cannot run Gradle at all.
+        #
+        # Downloaded OUTSIDE src/main/resources/native/ and reached via IREE_LIBRARY_PATH,
+        # which LibUtils honours ahead of the classpath copy. The instrumented library is
+        # never staged into resources.
+        #
+        # TEST_TASKS omits oomTest and stressTest: oomTest needs the pinned pip iree-compile
+        # for its exportOomFixture dependency, which this job does not carry, so the issue 16
+        # reproduction stays a local gate by decision, not by oversight. See
+        # docs/superpowers/specs/2026-08-12-ubsan-and-jni-checking-design.md.
+        - name: Download the UBSan-instrumented shim
+          uses: actions/download-artifact@v8
+          with:
+            name: iree-ubsan-shim-linux-x86_64
+            path: native/ubsan/
+
+        - name: UBSan gate over the JNI shim
+          env:
+            IREE_DJL_UBSAN_MODE: test
+            TEST_TASKS: "test leakTest"
+          run: ./native/ubsan_gate.sh
+
