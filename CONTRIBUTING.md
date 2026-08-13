@@ -144,11 +144,12 @@ UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1 ./native/build/iree_leak_harnes
 # instruments native/jni/iree_djl_jni.cpp. Runs all four test tasks:
 ./native/ubsan_gate.sh
 
-# TSan over local-sync (single-threaded; clean, measured — see below):
-rm -rf native/build && ./native/build.sh -DIREE_DJL_TSAN=ON
+# TSan over local-sync (single-threaded; clean, measured — see below). The instrumented
+# runtime variant is required whenever -DIREE_DJL_TSAN=ON; configure fails otherwise:
+rm -rf native/build && ./native/build.sh -DIREE_DJL_TSAN=ON -DIREE_RUNTIME_VARIANT=tsan
 setarch $(uname -m) -R ./native/build/iree_leak_harness "" 100 local-sync
 
-# TSan over local-task (worker pool). BLOCKED — currently false positives, see below:
+# TSan over local-task (worker pool). An enforced gate — a report here is a finding:
 ./native/tsan_gate.sh
 ```
 
@@ -159,6 +160,14 @@ ThreadSanitizer: unexpected memory mapping` without it.
 
 `IREE_DJL_SANITIZE` (ASan) and `IREE_DJL_TSAN` are mutually exclusive; enabling both fails
 fast at CMake configure time with a clear error rather than a cryptic compiler failure.
+
+`IREE_RUNTIME_VARIANT` (`default` | `tsan`) selects which pinned `iree-runtime-dist` tarball
+CMake fetches. `default` is the shipping artifact; `tsan` is the same release built with
+`-fsanitize=thread`, and only that one lets TSan see IREE's own synchronization. The two
+knobs must agree — `IREE_DJL_TSAN=ON` with the `default` runtime measures nothing, and a
+`tsan` runtime will not load into an uninstrumented process — so either mismatch fails at
+configure time. There is no `tsan` row for `windows-x86_64` (MSVC has no ThreadSanitizer),
+which the same block rejects up front.
 
 `IREE_DJL_UBSAN` is not mutually exclusive with either: UBSan is per-translation-unit and
 local, so it composes with ASan and needs no instrumented runtime. It is Linux-only (MSVC
@@ -213,16 +222,23 @@ default `local-sync`):
   TSan ran clean over 100 cycles, `strace -f` recorded **zero** `clone`/`clone3` syscalls, and
   `/proc/<pid>/status` read `Threads: 1` mid-invoke. Treat this as a measured property to
   re-verify if driver selection changes, not as an invariant of the linked binary.
-- **`local-task` (worker pool): TSan is BLOCKED on false positives.** `./native/tsan_gate.sh`
-  drives `local-task` and reported data races on the first observed iteration in every run to
-  date, but they are false positives — that is a measured result, not a construction guarantee. The dist `default` runtime is an uninstrumented Release build (`BUILDINFO`:
-  `variant=default`; no `__tsan` symbols), and TSan requires whole-program instrumentation to
-  observe a library's synchronization — so it cannot see IREE's atomics / task-executor
-  semaphores and flags the normal main↔worker submit/execute and refcounted-free handoffs as
-  races. The harness completes correctly (right results, no crash) every run. This becomes a
-  real race gate only with a TSan-instrumented runtime variant
-  ([iree-runtime-dist#9](https://github.com/measly-java-learning/iree-runtime-dist/issues/9));
-  until then `local-task` is covered for correctness by the Catch2 and JVM tests, not for races.
+- **`local-task` (worker pool): TSan clean, and an enforced gate.** `./native/tsan_gate.sh`
+  drives `local-task` against the pin's `tsan` runtime variant and exits zero. Treat any
+  report from it as a finding to triage, not as noise.
+
+  This is a change of status. Against the `default` runtime the same gate reported races on
+  the first observed iteration of every run, and those were false positives: TSan needs
+  whole-program instrumentation to observe a library's synchronization, so it could not see
+  IREE's atomics / task-executor semaphores and flagged the normal main↔worker
+  submit/execute and refcounted-free handoffs. The `tsan` variant
+  ([iree-runtime-dist#9](https://github.com/measly-java-learning/iree-runtime-dist/issues/9),
+  since delivered) is the same release built with `-fsanitize=thread`, and those reports are
+  gone. Documents dated before 2026-08-13 describe the earlier state.
+
+  Two limits remain, both about coverage. The gate is Linux-only and not a CI job (ASLR,
+  above), so it runs only when someone runs it; and the dist half is clang-built while the
+  shim is built by the host compiler — the TSan runtime ABI is shared, so the mix links and
+  runs, but the halves are instrumented by different compilers.
 
 On Windows there is no ASan/LSan harness and no TSan gate. CI runs the Catch2 units via
 `native/build_qa.sh` and asserts the static-CRT link with
