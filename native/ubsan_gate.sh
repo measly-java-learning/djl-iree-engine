@@ -57,7 +57,7 @@ ir_chown_outputs_on_exit "${BUILD_DIR}"
 # knows where it is, so no caller has to remember.
 MODE="${IREE_DJL_UBSAN_MODE:-auto}"
 if [ "${MODE}" = "auto" ]; then
-  if [ -n "${IREE_DJL_PINNED_IMAGE:-}" ]; then MODE=build; else MODE=all; fi
+  if [ -n "${MEASLY_DJL_PINNED_IMAGE:-}" ]; then MODE=build; else MODE=all; fi
 fi
 case "${MODE}" in
   build|test|all) ;;
@@ -107,7 +107,7 @@ fi
 
 # Refuse the JVM phase rather than letting Gradle fail obscurely. The container's JAVA_HOME
 # is Corretto 8; Gradle 9.6.1 and the project's JDK 17 toolchain both need 17+.
-if [ -n "${IREE_DJL_PINNED_IMAGE:-}" ]; then
+if [ -n "${MEASLY_DJL_PINNED_IMAGE:-}" ]; then
   echo "REFUSING the JVM phase inside the pinned image: JAVA_HOME is Corretto 8, and Gradle" >&2
   echo "9.6.1 with a JDK 17 toolchain cannot run there. Build here, test on the host:" >&2
   echo "  ./native/local_build_wrapper.sh native/ubsan_gate.sh   # build phase, in-container" >&2

@@ -64,13 +64,20 @@ scripts directly on the host works but breaks that floor.
 ITERS=2000 ./native/local_build_wrapper.sh native/bench.sh
 ```
 
-The wrapper picks the image from `uname -m` (`docker/linux-x86_64.Dockerfile` or
-`docker/linux-aarch64.Dockerfile`) and builds it first; Docker's layer cache makes that a
-near-instant no-op after the first run. The images carry the Corretto 8 JNI headers, so the
-shipped library is always compiled against the JDK 8 floor whatever the host has. The same
-Dockerfiles back the CI matrix (`.github/workflows/warm-build-image.yml`). `build.sh`,
+The wrapper runs the shared `engine-build` image, pinned by digest in `.engine-build-image` and
+published by `measly-java-learning/base-docker-images`. It is a manifest list, so the same digest
+works on x86_64 and aarch64 — including an ARM laptop — and there is nothing to build: a first
+run pays a pull. The image carries the Corretto 8 JNI headers, so the shipped library is always
+compiled against the JDK 8 floor whatever the host has. The same digest backs the CI matrix
+(`.github/workflows/native-build-job.yml`). `build.sh`,
 `build_qa.sh` and `ubsan_gate.sh` chown their outputs back to you on exit; other `native/`
 scripts run through the wrapper do not yet, and leave root-owned directories behind.
+
+To move to a newer toolchain, replace the digest in `.engine-build-image` with the one printed
+by the `Publish Engine Images` run in `measly-java-learning/base-docker-images`, and let CI prove
+the toolchain still builds. Digests are per-run, not per-commit: re-running the publish workflow
+on the same commit yields a different digest, so take it from the run you intend to consume
+rather than expecting to re-derive it later.
 
 Windows x86_64 is built in CI only (`build-iree-shim-windows` in
 `.github/workflows/native-build-job.yml`, on `windows-2022`, under an MSVC dev shell); there is
@@ -87,7 +94,7 @@ Generate or refresh it with:
 
 The script runs one CMake configure (no compilation) into `native/build-clangd`, which is
 needed before clangd can resolve IREE and JNI headers. A dedicated tree is used because the
-blessed build path (`native/local_build_wrapper.sh`) runs in the manylinux container, where the
+blessed build path (`native/local_build_wrapper.sh`) runs in the pinned toolchain container, where the
 repo sits at `/workspace` — a database shared with the shipping tree would flip between host
 paths and container-absolute paths that host clangd cannot resolve. Four things worth knowing:
 
@@ -96,7 +103,7 @@ paths and container-absolute paths that host clangd cannot resolve. Four things 
   shim. The script honors `JAVA_HOME` if set, otherwise derives it from `java` on PATH or
   `/usr/lib/jvm`, and fails loudly if none exists. This affects the editor only; the shipped
   `.so` is always built against the Corretto 8 headers baked into the pinned build image
-  (`docker/<platform>.Dockerfile`), whatever your host has.
+  (`.engine-build-image`), whatever your host has.
 - **Configure hits the network**, on the same terms as any build: the SHA256-pinned
   `iree-runtime-dist` tarball plus a SHA256-pinned Catch2 tarball from GitHub (no `git`
   required for either).

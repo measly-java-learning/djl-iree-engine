@@ -68,6 +68,12 @@ Not an exhaustive task list — see `CONTRIBUTING.md` for everything else.
 - **The pip `iree-base-runtime` wheel is unusable at any version** — no headers, no linkable
   library. The pinned `iree-runtime-dist` tarball (`native/cmake/IreeRuntimePin.cmake`) is the
   only source; that file is the single source of truth for the runtime version.
+- **The Linux toolchain image is external and pinned by digest** in `.engine-build-image`
+  (`ghcr.io/measly-java-learning/engine-build`, published by `base-docker-images`). There is no
+  `docker/` here to rebuild. It publishes `MEASLY_DJL_PINNED_IMAGE`, `MEASLY_DJL_TOOLSET_VER`,
+  `MEASLY_DJL_TOOLSET_NEVRA` and `MEASLY_DJL_NINJA_VERSION`, which `build.sh`, `build_qa.sh` and
+  `ubsan_gate.sh` assert against. Every other `IREE_DJL_*` name is this project's own knob —
+  a blanket prefix rewrite would rename `IREE_DJL_UBSAN_MODE` and break the UBSan gate silently.
 - **Three platforms ship**, including `windows-x86_64` — do not write "Linux only" anywhere.
 - **The native library is resolved through a SHA-256 content-addressed cache**
   (`%LOCALAPPDATA%\iree-djl` on Windows, else `$XDG_CACHE_HOME`, else `~/.cache/iree-djl`), not
@@ -85,7 +91,7 @@ Not an exhaustive task list — see `CONTRIBUTING.md` for everything else.
   (deliberate: the oldest supported `jni.h`), while the wrapper is Gradle 9.6.1 and
   `build.gradle.kts` sets a JDK 17 toolchain. Native builds go in the container, JVM runs
   never do. `ubsan_gate.sh` splits along that line by itself — `IREE_DJL_UBSAN_MODE=auto`
-  builds only when it sees `IREE_DJL_PINNED_IMAGE` — and refuses the JVM phase there rather
+  builds only when it sees `MEASLY_DJL_PINNED_IMAGE` — and refuses the JVM phase there rather
   than letting Gradle fail obscurely.
 - **GCC has no UBSan ignorelist.** `-fsanitize-ignorelist` and `-fsanitize-blacklist` are
   unrecognized options, and `UBSAN_OPTIONS=suppressions=` does not suppress these checks

@@ -37,7 +37,7 @@ if [ -z "${JAVA_HOME:-}" ] || [ ! -f "${JAVA_HOME}/include/jni.h" ]; then
   exit 1
 fi
 
-# The shipping tree (native/build) is configured by native/build.sh inside the manylinux
+# The shipping tree (native/build) is configured by native/build.sh inside the pinned toolchain
 # container, where the repo sits at /workspace -- a database cached there holds container paths
 # that host clangd cannot resolve. This tree is written by nothing but this script, and the QA
 # tree (native/qa) is separate and sanitizer-only: its flags are not the ones clangd should

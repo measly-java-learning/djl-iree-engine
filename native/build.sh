@@ -24,7 +24,7 @@ fi
 
 
 # This script expects:
-# 1. To be running inside the pinned toolchain image (docker/<platform>.Dockerfile), which
+# 1. To be running inside the pinned shared toolchain image (see .engine-build-image), which
 #    bakes the glibc-2.28 floor via its manylinux_2_28 base and supplies JAVA_HOME + ninja
 # 2. Failing that, a manylinux_2_28 base with amazon-corretto-linux-jdk.rpm at /workspace
 # The runtime tarball is fetched by CMake during the shim configure (also inside the container,
@@ -40,7 +40,7 @@ if [ "${IR_HOST_OS}" = "windows" ]; then
     || { echo "JDK headers not found under JAVA_HOME=${JAVA_HOME} (expected include/win32/jni_md.h)"; exit 1; }
   echo "JAVA_HOME=${JAVA_HOME}"
 else
-  # Fast path: the pinned toolchain image (docker/linux-*.Dockerfile) bakes the Corretto 8 headers
+  # Fast path: the pinned shared toolchain image (see .engine-build-image) bakes the Corretto 8
   # in and exports JAVA_HOME, so there is nothing to extract. The fallback below is for running
   # this script directly on a host, or inside a bare manylinux base — in which case you supply
   # amazon-corretto-linux-jdk.rpm at the repo root yourself.
@@ -71,15 +71,15 @@ else
   echo "--- Setting up Ninja (the shim configures with -G Ninja) ---"
   # The pinned image bakes ninja in at an exact version; a miss there means a broken image,
   # not something to paper over with an unpinned pip install.
-  if [ -n "${IREE_DJL_PINNED_IMAGE:-}" ]; then
+  if [ -n "${MEASLY_DJL_PINNED_IMAGE:-}" ]; then
     # Same guard as native/build_qa.sh: under `set -u` a bare dereference of a companion
     # variable the marker promises would abort with "unbound variable" instead of the
     # BROKEN IMAGE message this branch exists to print.
-    : "${IREE_DJL_NINJA_VERSION:?IREE_DJL_PINNED_IMAGE is set but IREE_DJL_NINJA_VERSION is not -- rebuild the image from docker/*.Dockerfile, or unset the marker for a host run}"
+    : "${MEASLY_DJL_NINJA_VERSION:?MEASLY_DJL_PINNED_IMAGE is set but MEASLY_DJL_NINJA_VERSION is not -- check the pin in .engine-build-image, or unset the marker for a host run}"
     command -v ninja >/dev/null 2>&1 || {
-      echo "BROKEN IMAGE: ninja is not on PATH in the pinned image; rebuild it." >&2; exit 1; }
-    [ "$(ninja --version)" = "${IREE_DJL_NINJA_VERSION}" ] || {
-      echo "BROKEN IMAGE: ninja $(ninja --version), image pins ${IREE_DJL_NINJA_VERSION}." >&2; exit 1; }
+      echo "BROKEN IMAGE: ninja is not on PATH in the pinned image; check the pin in .engine-build-image." >&2; exit 1; }
+    [ "$(ninja --version)" = "${MEASLY_DJL_NINJA_VERSION}" ] || {
+      echo "BROKEN IMAGE: ninja $(ninja --version), image pins ${MEASLY_DJL_NINJA_VERSION}." >&2; exit 1; }
   else
     # Same rule as build_qa.sh: this script installs nothing. `pip install ninja` here was
     # unpinned against an image that pins 1.13.0, and on the Ubuntu workstation and runner

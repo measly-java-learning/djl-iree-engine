@@ -36,20 +36,12 @@ jobs:
           gh attestation verify runtime.tgz --repo measly-java-learning/iree-runtime-dist
           rm -f runtime.tgz
 
-      # The toolchain image: manylinux_2_28 at a dated tag plus the JNI headers, ninja, and ASan
-      # runtime the base does not ship, all at pinned versions. Built here rather than pulled from
-      # a registry -- warm-build-image.yml keeps the layers in the GHA cache, so this is a cache
-      # hit rather than a dnf round-trip. `load: true` puts the image in the local daemon for the
-      # docker run steps below.
-      - uses: docker/setup-buildx-action@v4.2.0
-      - name: Build the pinned toolchain image
-        uses: docker/build-push-action@v7.3.0
-        with:
-          context: docker
-          file: "docker/${{ matrix.platform }}.Dockerfile"
-          tags: djl-iree-engine-build:${{ matrix.platform }}
-          load: true
-          cache-from: type=gha,scope=${{ matrix.platform }}
+      # The shared toolchain image, pinned by digest. It is a manifest list covering amd64 and
+      # arm64, so each runner resolves its own architecture and no --platform is passed. The
+      # package is public: the pull is implicit, with no login step and no secret. Reading the
+      # digest from a checked-in file keeps CI and native/local_build_wrapper.sh on one value.
+      - name: Resolve the pinned toolchain image
+        run: echo "ENGINE_BUILD_IMAGE=$(cat .engine-build-image)" >> "$GITHUB_ENV"
 
       # This is very similar to how `local_build_wrapper.sh` executes build
       # which enables testing outside of GHA
@@ -58,7 +50,7 @@ jobs:
           docker run --rm \
             -v ${{ github.workspace }}:/workspace \
             -w /workspace \
-            djl-iree-engine-build:${{ matrix.platform }} \
+            "${ENGINE_BUILD_IMAGE}" \
             /bin/bash /workspace/native/build.sh
 
       - name: Run native QA gate (Catch2 units + ASan/LSan leak harness)
@@ -66,7 +58,7 @@ jobs:
           docker run --rm \
             -v ${{ github.workspace }}:/workspace \
             -w /workspace \
-            djl-iree-engine-build:${{ matrix.platform }} \
+            "${ENGINE_BUILD_IMAGE}" \
             /bin/bash /workspace/native/build_qa.sh
 
       # Gate B, phase 1: build the instrumented shim with the pinned toolchain and libubsan
@@ -81,7 +73,7 @@ jobs:
           docker run --rm \
             -v ${{ github.workspace }}:/workspace \
             -w /workspace \
-            djl-iree-engine-build:${{ matrix.platform }} \
+            "${ENGINE_BUILD_IMAGE}" \
             /bin/bash /workspace/native/ubsan_gate.sh
 
       # A DISTINCT artifact name, deliberately outside the `iree-libs-*` pattern that

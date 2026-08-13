@@ -4,7 +4,7 @@
 #   ./native/gen_clangd_db.sh          (see "Editor setup (clangd)" in README.md)
 #
 # Why not native/build: that tree is the shipping shim's, and the blessed build path
-# (native/local_build_wrapper.sh) runs native/build.sh in the manylinux container, where the
+# (native/local_build_wrapper.sh) runs native/build.sh in the pinned toolchain container, where the
 # repo sits at /workspace. Every container build reconfigures native/build, so a database
 # cached there holds container-absolute paths (/workspace/...) that host clangd cannot resolve
 # -- and native/build.sh never writes one at all (it does not pass
