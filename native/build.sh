@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Host build: the staging platform follows the build host's architecture (linux-x86_64 or
-# linux-aarch64). No container: this skeleton has no glibc floor to hold because it ships
-# nothing. See the spec's deferred list.
+# Builds the shim for the build host's own architecture and stages it under that platform
+# name (linux-x86_64 or linux-aarch64). No cross-compilation: each platform is built on a
+# host of that architecture. The glibc floor comes from the image this runs in, not from here.
 set -euo pipefail
 
 # Host fork. Under Git-Bash on Windows `uname -s` is MINGW64_NT-* or MSYS_NT-*. The caller must have

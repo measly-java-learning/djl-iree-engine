@@ -1,10 +1,10 @@
 #ifndef MEASLY_IREE_ALIGNED_ALLOC_H
 #define MEASLY_IREE_ALIGNED_ALLOC_H
 
-// The single source of the host-buffer alignment contract and the future
-// W6 extraction seam (see docs/2026-08-04-borrowed-host-buffers-findings.md
-// §7). Any allocation that must import zero-copy into IREE goes through
-// AlignedAlloc/AlignedFree.
+// The single source of the host-buffer alignment contract. Any allocation that
+// must import zero-copy into IREE goes through AlignedAlloc/AlignedFree, which
+// also makes this the seam to cut along if the allocator ever needs to move
+// (see docs/2026-08-04-borrowed-host-buffers-findings.md §7).
 //
 // Contract: IREE_HAL_HEAP_BUFFER_ALIGNMENT = 64
 // (iree/base/config.h:238-245 in the pinned iree-runtime-dist): "Power of two
@@ -14,8 +14,8 @@
 // HAL buffers must meet this alignment requirement."
 //
 // C++17 aligned new/delete (not posix_memalign) so this compiles under MSVC
-// too — matching the existing pattern at native/test/iree_runtime_test.cpp
-// and native/harness/iree_leak_harness.cpp.
+// too — the same pattern native/test/iree_runtime_test.cpp and
+// native/harness/iree_leak_harness.cpp use.
 
 #include <atomic>
 #include <cstddef>

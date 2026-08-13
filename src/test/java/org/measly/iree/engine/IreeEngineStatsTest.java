@@ -167,11 +167,12 @@ class IreeEngineStatsTest {
     }
 
     /**
-     * The regression this guards: {@code nativeStatsAvailable} used to be inferred from whichever
-     * models were live, so with none live it reported {@code true} unconditionally — the wrong
-     * answer on a dist built with statistics off, at exactly the moment an operator polls to see
-     * how the deployment is configured. Sampled either side of a model's lifetime as well as
-     * during it, since the population is what the answer must not depend on.
+     * {@code nativeStatsAvailable} must reflect how the dist was built, never which models
+     * happen to be live: inferring it from the live population reports {@code true}
+     * unconditionally when none are — the wrong answer on a dist built with statistics off, at
+     * exactly the moment an operator polls to see how the deployment is configured. Sampled
+     * either side of a model's lifetime as well as during it, since the population is what the
+     * answer must not depend on.
      */
     @Test
     void nativeStatsAvailableMatchesTheBuildRegardlessOfLiveModels() throws Exception {

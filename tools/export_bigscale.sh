@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Bench-time fixtures for the W2 copy-cost measurement (native/bench/iree_copy_bench).
+# Bench-time fixtures for the copy-cost measurement (native/bench/iree_copy_bench).
 # Peer of export_scale.sh: same compiler pin (iree-base-compiler MUST be 3.11.0
 # to match the linked runtime commit e4a3b0405d7d23554da26403658d0e8c3c5ecf25),
 # same --iree-hal flags, same IREE_TARGET_TRIPLE pass-through.

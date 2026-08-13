@@ -1,6 +1,6 @@
-// W2 copy-cost measurement (spike 2026-08-04): memcpy cost vs kernel time as a
-// function of tensor size, on the pinned runtime. Answers the brief's Q1 "does
-// the engine copy, and at what cost" with numbers.
+// Copy-cost measurement: memcpy cost vs kernel time as a function of tensor
+// size, on the pinned runtime. Answers "does the engine copy, and at what
+// cost" with numbers (see docs/borrowed-host-buffers-brief.md).
 //
 // Takes the four bigscale .vmfb paths on argv in size order (see
 // tools/export_bigscale.sh), one row per size:

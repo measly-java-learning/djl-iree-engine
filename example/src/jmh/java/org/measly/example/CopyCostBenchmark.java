@@ -18,9 +18,9 @@ import org.openjdk.jmh.annotations.TearDown;
 
 /**
  * Java-side input-copy cost of {@code manager.create(float[], Shape)}, plain
- * vs {@code iree.engine.alignedBuffers=true} — the denominator pair for the
- * W2 copy measurement (native bench in §3 of the findings doc gives kernel
- * time; this gives the Java copy overhead on top of it).
+ * vs {@code iree.engine.alignedBuffers=true} — the Java-side half of the copy
+ * measurement. The native bench ({@code native/bench/iree_copy_bench.cpp})
+ * gives kernel time; this gives the Java copy overhead on top of it.
  *
  * <p>Both arms run the identical {@code allocateDirect + copyBuffer} path
  * inside {@code create}; the aligned arm's {@code allocateDirect} is the

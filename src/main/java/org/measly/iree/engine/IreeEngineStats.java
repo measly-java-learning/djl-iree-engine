@@ -359,8 +359,9 @@ public final class IreeEngineStats {
      * {@code -Dai.djl.iree.jmx_enabled=false}; anything else, including an absent property, is
      * opt-in. A property unreadable under a restrictive {@code SecurityManager} stays off.
      *
-     * <p>Split out of {@link #registerMBeanOnce()} so it is reachable from a test. Folded in, the
-     * only way to observe the decision was through the one-shot latch, which fires once per JVM.
+     * <p>Kept separate from {@link #registerMBeanOnce()} so a test can reach the decision
+     * directly. Inlined there, the only way to observe it would be through the one-shot latch,
+     * which fires once per JVM.
      */
     static boolean jmxEnabled() {
         try {

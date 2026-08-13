@@ -17,18 +17,17 @@ import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 /**
- * JNI output-marshalling failure-contract tests under a constrained heap
- * (issue #16). Run via {@code ./gradlew oomTest} — the fixture is exported by
+ * JNI output-marshalling failure-contract tests under a constrained heap.
+ * Run via {@code ./gradlew oomTest} — the fixture is exported by
  * the {@code exportOomFixture} task and the test JVM is deliberately small
  * ({@code -Xmx128m}, no heap dump: the OOM is the expected outcome).
  *
  * <p>Honest framing: this suite asserts the <em>contract</em> — an output
  * allocation failure surfaces as a clean {@link OutOfMemoryError} and the JVM
- * (and a fresh runtime) survives. The specific null-check branches added in
- * the fix are not deterministically reachable: they need heap exhaustion
+ * (and a fresh runtime) survives. The shim's individual null-check branches
+ * are not deterministically reachable from here: they need heap exhaustion
  * mid-loop, and the 512 MiB output fails first at the already-checked
- * {@code ByteBuffer.allocateDirect}. This is the executorch PR #18 test shape
- * adapted to IREE's direct-buffer output path.
+ * {@code ByteBuffer.allocateDirect}.
  */
 @Tag("oom")
 class IreeNativeOomTest {

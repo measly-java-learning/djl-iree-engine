@@ -14,11 +14,11 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
 
 /**
- * Null-argument guards at the JNI boundary (issue #17). Every caller-supplied
+ * Null-argument guards at the JNI boundary. Every caller-supplied
  * array, element, and string must be validated before the native code
  * dereferences or length-checks it: the JNI spec makes
  * {@code GetArrayLength}/{@code GetStringUTFChars}/{@code GetDirectBufferAddress}
- * on null UB, which historically SIGSEGV'd the whole JVM instead of throwing.
+ * on null UB, which SIGSEGVs the whole JVM instead of throwing.
  *
  * <p>The suite completing in one JVM is itself the no-SIGSEGV proof — an
  * unfixed build dies at the first case. Each case pins the exact

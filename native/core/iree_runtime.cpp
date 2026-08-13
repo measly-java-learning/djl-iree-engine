@@ -168,8 +168,8 @@ std::unique_ptr<IreeRuntime> IreeRuntime::Load(
   if (!parameters.empty()) {
     std::vector<iree_io_parameter_provider_t*> raw_providers;
     raw_providers.reserve(parameters.size());
-    // Locally scoped: Task 5 proved under ASan that the io_parameters module
-    // retains each provider, so nothing here needs to outlive this block.
+    // Locally scoped: the io_parameters module retains each provider (verified
+    // under ASan), so nothing here needs to outlive this block.
     std::vector<ParameterProviderPtr> scoped_providers;
     scoped_providers.reserve(parameters.size());
 
@@ -185,17 +185,16 @@ std::unique_ptr<IreeRuntime> IreeRuntime::Load(
       //    offset} per entry (irpa_parser.c:140-152), so no parameter bytes
       //    are resident yet -- they are pread() later, at io_parameters.load
       //    time, through this same retained handle (parameter_index_provider.c:147,
-      //    fd_file.c:311). Task 7's FILE-backed differential dropped this
-      //    local handle immediately after parse, against the FILE-backed
-      //    scale_weights_zero.irpa fixture, and ASan reported no
-      //    use-after-free on the SUBSEQUENT real read through the index's
-      //    retained reference. That absent fault is the evidence: had the
-      //    retain not fired, the later pread would have hit a freed handle
-      //    and closed fd. (The golden output is the weaker half -- the
-      //    fixture is zeroed, so a silently-zeroed buffer would look
-      //    identical.) See iree_params_test.cpp's "golden vector: FILE-backed
-      //    (zeroed) archive" case and docs/2026-07-25-irpa-spike-findings.md.
-      //    Line numbers cite IREE at the pinned commit e4a3b0405d.
+      //    fd_file.c:311). The evidence is an ASan differential against the
+      //    FILE-backed scale_weights_zero.irpa fixture: dropping this local
+      //    handle right after parse still reads clean through the index's
+      //    retained reference, where a missing retain would leave the later
+      //    pread on a freed handle and a closed fd. (Golden output alone
+      //    cannot show this -- the fixture is zeroed, so a silently-zeroed
+      //    buffer looks identical.) See iree_params_test.cpp's "golden vector:
+      //    FILE-backed (zeroed) archive" case and
+      //    docs/2026-07-25-irpa-spike-findings.md. Line numbers cite IREE at
+      //    the pinned commit e4a3b0405d.
       iree_io_file_handle_t* raw_file = nullptr;
       IREE_CHECK_OR_THROW(iree_io_file_handle_open(
           IREE_IO_FILE_MODE_READ | IREE_IO_FILE_MODE_RANDOM_ACCESS,
@@ -217,10 +216,10 @@ std::unique_ptr<IreeRuntime> IreeRuntime::Load(
       // Explicit release right here, not left to scope-exit ordering (which
       // would actually run at the end of this loop iteration, after step 3,
       // since scoped_file is declared before scoped_index and destroys in
-      // reverse order). This is the exact timing Task 7's FILE-backed
-      // differential proved safe: the index has already taken its own
-      // reference to the handle inside iree_io_parse_file_index (retain at
-      // parameter_index.c:185), so nothing here needs to outlive this line.
+      // reverse order). Safe at exactly this point because the index has
+      // already taken its own reference to the handle inside
+      // iree_io_parse_file_index (retain at parameter_index.c:185), so nothing
+      // here needs to outlive this line.
       scoped_file.reset();
 
       // 3. Wrap in a provider bound to the caller's scope name.
@@ -369,8 +368,8 @@ BufferViewPtr ImportOrCopy(iree_hal_device_t* device,
 
   iree_hal_buffer_view_t* view = nullptr;
   if (state.stagingMode == IreeRuntime::StagingMode::kAllocatePerCall) {
-    // Historical behavior: one fresh HAL buffer per staged input per call
-    // (allocate + transfer + view create — the "3-35x a bare memcpy" cost).
+    // One fresh HAL buffer per staged input per call (allocate + transfer +
+    // view create — the "3-35x a bare memcpy" cost).
     IREE_CHECK_OR_THROW(iree_hal_buffer_view_allocate_buffer_copy(
         device, allocator, shape.size(), shape.data(),
         static_cast<iree_hal_element_type_t>(input.elementType),
@@ -382,11 +381,11 @@ BufferViewPtr ImportOrCopy(iree_hal_device_t* device,
     // shared buffer) is load-bearing: a call with several staged inputs must
     // not clobber an earlier input's view — slot i is only written after the
     // views for slots [0, i) are already pushed into the call. Between calls
-    // the previous call's views are gone (synchronous invoke; released when
-    // RunCall's input_views destructs), so rewriting a slot is safe.
-    // Allocated with the same params as allocate_buffer_copy uses internally
-    // (DEVICE_LOCAL | HOST_VISIBLE, DEFAULT | MAPPING), so kernel visibility
-    // is unchanged — only the allocation is amortized.
+    // no views from the previous call survive (synchronous invoke; released
+    // when RunCall's input_views destructs), so rewriting a slot is safe.
+    // Allocated with the same params allocate_buffer_copy uses internally
+    // (DEVICE_LOCAL | HOST_VISIBLE, DEFAULT | MAPPING), so both paths give the
+    // kernel the same visibility and only the allocation is amortized.
     if (state.cachedStaging.size() <= input_index) {
       state.cachedStaging.resize(input_index + 1);
       state.cachedStagingSizes.resize(input_index + 1, 0);
@@ -394,7 +393,7 @@ BufferViewPtr ImportOrCopy(iree_hal_device_t* device,
     auto& cached = state.cachedStaging[input_index];
     auto& cachedSize = state.cachedStagingSizes[input_index];
     if (cached == nullptr || cachedSize < input.nbytes) {
-      // Retire the old buffer and its contribution to the running sum together,
+      // Retire the outgoing buffer and its contribution to the running sum together,
       // BEFORE attempting the new allocation. IREE_CHECK_OR_THROW below can
       // leave this slot empty, and dropping the contribution first means the
       // sum then reports what is actually allocated (nothing for this slot)

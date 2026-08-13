@@ -112,7 +112,8 @@ class IreeNativeTest {
      * addresses; IREE's import precondition is 64-byte alignment
      * (IREE_HAL_HEAP_BUFFER_ALIGNMENT). The printed {@code addr%64} histogram
      * shows how often a malloc'd address happens to meet the precondition —
-     * the raw material for findings doc §4. Buffers are dropped without GC
+     * the raw material behind
+     * docs/2026-08-04-borrowed-host-buffers-findings.md §4. Buffers are dropped without GC
      * between allocations so consecutive mallocs land at different offsets.
      */
     @Test
@@ -138,7 +139,7 @@ class IreeNativeTest {
     }
 
     /**
-     * The W4 prototype's core claim: an engine-allocated aligned buffer
+     * The core claim behind engine-allocated buffers: an aligned buffer
      * imports zero-copy deterministically (both inputs are aligned, so both
      * outcomes must be WRAPPED — a plain JDK buffer for either input would
      * make this flaky, see recordsDirectBufferAddressAlignment). The buffer

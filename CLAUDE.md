@@ -100,8 +100,9 @@ Not an exhaustive task list — see `CONTRIBUTING.md` for everything else.
   `set_source_files_properties` override, or `-fno-sanitize=<check>` — each needs a comment
   naming what was given up, or a check silently leaves the gate.
 - **`oomTest` and `stressTest` do not run in CI.** `oomTest` needs pip `iree-compile` for
-  its fixture. It is the only reproduction of issue 16's allocation-failure paths, so the
-  JNI failure contract is verified only when someone runs the full local sequence.
+  its fixture. It is the only task that drives the output-marshalling allocation-failure
+  paths, so the JNI failure contract is verified only when someone runs the full local
+  sequence.
 
 ## Before claiming done
 

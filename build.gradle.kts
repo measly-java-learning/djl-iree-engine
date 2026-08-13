@@ -228,11 +228,11 @@ tasks.withType<Test>().configureEach {
         "ireeLibraryPath",
         providers.environmentVariable("IREE_LIBRARY_PATH").orElse("")
     )
-    // -Xcheck:jni is the only lever that catches issue 16's defect class: JNI
-    // calls made with a pending exception, and null array arguments. It is on the
+    // -Xcheck:jni is the only lever that catches this defect class: JNI calls
+    // made with a pending exception, and null array arguments. It is on the
     // umbrella rather than on tasks.test deliberately -- tasks.test excludes the
     // leak/oom/stress tags, and oomTest is the one task that drives the
-    // allocation-failure paths those bugs lived on. Costs nothing: it runs
+    // allocation-failure paths where those defects hide. Costs nothing: it runs
     // against the plain shipping library.
     jvmArgs("-Xcheck:jni")
 }

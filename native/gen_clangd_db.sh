@@ -3,7 +3,7 @@
 #
 # Run it once after cloning, and again after any bump of native/cmake/IreeRuntimePin.cmake or a
 # change to the compile flags in native/CMakeLists.txt -- the database is otherwise never
-# refreshed, and a stale one makes clangd resolve against the OLD runtime headers silently.
+# refreshed, and a stale one silently makes clangd resolve against out-of-date runtime headers.
 #
 # Configure only: no compilation happens, the database is written at CMake configure time.
 set -euo pipefail

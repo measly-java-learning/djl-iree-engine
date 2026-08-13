@@ -94,8 +94,9 @@ TEST_CASE("golden vector: FILE-backed (zeroed) archive", "[params]") {
   // Unlike kScaleIrpa (a SPLAT archive with no on-disk storage), this fixture
   // is FILE-backed: real bytes on disk, all zero. Loading it is what makes
   // iree_io_parameter_index_add take the FILE branch (parameter_index.c:185)
-  // for the first time in this suite -- see Task 7 / the file-handle row of
-  // the ownership table in docs/2026-07-25-irpa-spike-findings.md.
+  // -- see the file-handle row of the ownership table in
+  // docs/2026-07-25-irpa-spike-findings.md. It is the only case in this suite
+  // that takes that branch.
   auto bytes = ReadFile(kScaleVmfb);
   const ParameterScope scopes[] = {{"model", kScaleIrpaZero}};
   auto runtime = IreeRuntime::Load(bytes, kEntryPoint, "local-sync", scopes);
