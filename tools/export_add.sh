@@ -32,9 +32,9 @@
 # so the correct compiler is stable `iree-base-compiler==3.11.0` from pip's
 # plain index (`uv pip install --python .venv 'iree-base-compiler==3.11.0'`) --
 # never a nightly, never --find-links, never a `main`/from-source checkout.
-# Mixing a main-branch runtime with a stable compiler (or vice versa) is
-# exactly the import-signature mismatch this project hit previously; both
-# sides of the pair must be the same tagged, stable release. Confirmed: the
+# Mixing a main-branch runtime with a stable compiler (or vice versa) produces
+# an import-signature mismatch at load; both sides of the pair must be the same
+# tagged, stable release. Confirmed: the
 # installed compiler's own --version output embeds commit
 # e4a3b0405d7d23554da26403658d0e8c3c5ecf25, matching the dist's
 # runtime_commit exactly.
@@ -54,17 +54,16 @@ if [[ ! -x "${IREE_COMPILE}" ]] && ! command -v "${IREE_COMPILE}" >/dev/null 2>&
   exit 1
 fi
 
-# --iree-hal-target-device / --iree-hal-local-target-device-backends are the
-# current (3.11.0) flag spelling and were confirmed to work; an older
-# compiler might need the legacy --iree-hal-target-backends=llvm-cpu spelling
-# instead.
+# --iree-hal-target-device / --iree-hal-local-target-device-backends is the
+# flag spelling 3.11.0 accepts; compilers older than that want
+# --iree-hal-target-backends=llvm-cpu instead.
 #
 # target-cpu=generic ALWAYS, matching export_scale.sh. This fixture is committed
 # to the repository and runs on every contributor's machine and every CI runner,
-# not just the one that produced it. A previous version used target-cpu=host,
-# which baked the producer's AVX-512 (cpu = "tigerlake") into the embedded
-# executable and made the fixture crash with an illegal instruction on any host
-# without AVX-512. tools/check_fixture_portability.sh guards against a repeat.
+# not just the one that produced it. target-cpu=host bakes the producing
+# machine's ISA (e.g. AVX-512 as cpu = "tigerlake") into the embedded
+# executable, which then dies with an illegal instruction anywhere that ISA is
+# absent. tools/check_fixture_portability.sh guards against that.
 # The generic-CPU perf warning is expected and irrelevant: this fixture adds two
 # 4-element vectors.
 #
@@ -84,7 +83,7 @@ fi
 
 echo "wrote ${out}"
 
-# Confirm the exported symbol rather than assuming it (spec §12). Use the
+# Confirm the exported symbol rather than assuming it. Use the
 # pip-installed dump tool, which matches iree-compile's version/ABI.
 DUMP_MODULE="${IREE_DUMP_MODULE:-${repo_root}/.venv/bin/iree-dump-module}"
 if [[ -x "${DUMP_MODULE}" ]]; then

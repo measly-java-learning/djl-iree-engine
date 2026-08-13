@@ -10,7 +10,7 @@
 #include <vector>
 
 // The C++ facade over the IREE runtime: this is the middle layer in the
-// JVM -> JNI -> IREE path. native/jni/ (Task 6) is the only caller of
+// JVM -> JNI -> IREE path. native/jni/ is the only caller of
 // anything declared here; it marshals JNI types to/from the types below and
 // otherwise does not touch IREE's C API directly. Everything IREE-specific --
 // handle lifetimes, status conversion, driver/session/module setup -- is
@@ -87,8 +87,8 @@ class IreeRuntime {
   enum class ImportOutcome { kWrapped, kStaged };
 
   // How the staged input fallback obtains its staging buffer (see
-  // ImportOrCopy). kAllocatePerCall is the historical behavior — one fresh
-  // HAL buffer per staged input per call. The kCached* modes retain a
+  // ImportOrCopy). kAllocatePerCall takes one fresh HAL buffer per staged
+  // input per call. The kCached* modes retain a
   // grow-only buffer PER INPUT SLOT on the runtime and reuse it across calls,
   // amortizing the allocation; the two cached modes differ only in the copy
   // primitive (host map_write vs device transfer_h2d). ImportOutcome stays
@@ -114,8 +114,8 @@ class IreeRuntime {
                                            std::string_view driver,
                                            std::span<const ParameterScope> parameters);
 
-  // As above, with the staged-input fallback's staging policy. Defaults to
-  // the historical per-call allocation, so no existing callsite changes.
+  // As above, with the staged-input fallback's staging policy. The overloads
+  // without this parameter select kAllocatePerCall.
   static std::unique_ptr<IreeRuntime> Load(std::span<const std::byte> vmfb,
                                            std::string_view entryPoint,
                                            std::string_view driver,

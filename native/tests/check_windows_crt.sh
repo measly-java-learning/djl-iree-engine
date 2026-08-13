@@ -59,7 +59,7 @@ scanned=0; skipped=0
 while IFS= read -r lib; do
   name="$(basename "${lib}")"
   # Capture stdout+stderr AND the exit status. Do NOT `|| true` here: a dumpbin failure is exactly the
-  # condition this gate exists to notice, and swallowing it is what made the old scan useless.
+  # condition this gate exists to notice, and swallowing it would let the scan pass vacuously.
   out="$(dumpbin -nologo -directives "${lib}" 2>&1)"; drc=$?
   if [ "${drc}" -ne 0 ]; then
     echo "  ERROR ${name} -> dumpbin exited ${drc}:"

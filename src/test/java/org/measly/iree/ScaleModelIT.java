@@ -63,8 +63,8 @@ class ScaleModelIT {
 
         float[] out = forwardScale();
 
-        // Golden from the spike: manifest entryPoint beats the module.main
-        // default — the default would fail against scale.vmfb.
+        // Golden value: the manifest's entryPoint beats the module.main
+        // default — the default fails against scale.vmfb.
         assertArrayEquals(new float[] {2f, 4f, 6f, 8f}, out, 1e-6f);
     }
 

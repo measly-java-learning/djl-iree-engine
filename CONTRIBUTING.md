@@ -187,16 +187,16 @@ afterwards**. A UB hit presents as a JVM hard crash mid-test, not a test failure
 the `runtime error:` line above the JVM's crash output.
 
 The gate runs `test leakTest oomTest stressTest`, not just `test`: `tasks.test` excludes the
-`leak`, `oom` and `stress` tags, and `oomTest` is a scripted reproduction of issue 16 — the
-only task that drives the output-marshalling allocation-failure paths. `oomTest` needs the
+`leak`, `oom` and `stress` tags, and `oomTest` is the only task that drives the
+output-marshalling allocation-failure paths. `oomTest` needs the
 pinned pip `iree-compile` on PATH for its `exportOomFixture` dependency, which is why it and
 `stressTest` run locally only; CI covers `test` and `leakTest`. **Run the full local
 sequence before claiming the JNI boundary is verified** — CI does not check those paths.
 
 Every JVM test task also runs under `-Xcheck:jni`, the JVM's own JNI-contract checker,
 attached to the `Test` task umbrella in `build.gradle.kts`. It catches the class UBSan
-cannot see: JNI calls made with a pending exception, and null array arguments — issue 16
-exactly. It runs against the plain shipping library, so it costs nothing and needs no
+cannot see: JNI calls made with a pending exception, and null array arguments. It runs
+against the plain shipping library, so it costs nothing and needs no
 special build.
 
 **Operational note:** either sanitizer build stages an instrumented `libiree_djl.so` into

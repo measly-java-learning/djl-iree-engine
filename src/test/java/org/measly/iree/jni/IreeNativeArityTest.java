@@ -13,11 +13,11 @@ import java.nio.FloatBuffer;
 import org.junit.jupiter.api.Test;
 
 /**
- * Regression tests for the invoke() shapes/types arity validation (issue #13).
+ * Regression tests for the invoke() shapes/types arity validation.
  *
- * <p>The native guard (iree_djl_jni.cpp: throws "inputs, shapes, and elementTypes
- * must have the same length" before touching the marshalled copies) landed in
- * main via PR #18; this class pins the contract so it cannot regress. The
+ * <p>This class pins the contract of the native guard (iree_djl_jni.cpp: throws
+ * "inputs, shapes, and elementTypes must have the same length" before touching
+ * the marshalled copies) so it cannot regress. The
  * recovery test additionally proves the early throw leaves the runtime usable
  * — a failed invoke must not poison the handle.
  */

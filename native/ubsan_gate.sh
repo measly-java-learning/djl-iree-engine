@@ -65,8 +65,8 @@ case "${MODE}" in
 esac
 
 # All four test tasks, not just `test`. tasks.test excludes the leak/oom/stress tags, and
-# oomTest is a scripted reproduction of issue 16 -- the only task that drives the
-# allocation-failure paths in the output marshalling loop. stressTest and oomTest do not
+# oomTest is the only task that drives the allocation-failure paths in the output
+# marshalling loop. stressTest and oomTest do not
 # run in CI, so this local sequence is the only place they meet an instrumented shim.
 TEST_TASKS="${TEST_TASKS:-test leakTest oomTest stressTest}"
 

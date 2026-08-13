@@ -237,9 +237,9 @@ void ImportEscapeCheck(const std::vector<std::byte>& vmfb, const char* driver) {
 // A full load/invoke/close cycle with a parameter archive bound, via the
 // 4-argument Load. This is what exercises the parameter chain's ownership
 // (file handle -> index -> provider -> module) repeatedly under ASan/LSan --
-// see docs/2026-07-25-irpa-spike-findings.md, Task 7. Also what a background
-// long-running invocation of this harness uses to keep an archive bound and
-// repeatedly read for the /proc/<pid>/maps check (task-7-brief.md Step 3).
+// see docs/2026-07-25-irpa-spike-findings.md. A long-running invocation of this
+// harness also uses it to keep an archive bound and repeatedly read, which is
+// what the /proc/<pid>/maps check observes.
 //
 // The golden check below assumes the caller passes the zeroed fixture
 // (scale_weights_zero.irpa, per the documented invocation): input * 0 = all
@@ -247,9 +247,9 @@ void ImportEscapeCheck(const std::vector<std::byte>& vmfb, const char* driver) {
 // read from a read that landed on already-zeroed (e.g. freed/unmapped) memory,
 // so this check alone does not prove the retain is load-bearing. What this
 // cycle actually witnesses, run under ASan/LSan, is the *absence* of a
-// use-after-free: if the retain did not actually keep the handle/fd alive,
-// the later pread() would touch freed memory and a closed fd, which ASan
-// reports. See the FILE-backed differential in
+// use-after-free: a retain that fails to keep the handle/fd alive leaves the
+// later pread() touching freed memory and a closed fd, which ASan reports.
+// See the FILE-backed differential in
 // docs/2026-07-25-irpa-spike-findings.md for the full argument.
 void ParamCycle(const std::vector<std::byte>& vmfb, const char* driver,
                  std::span<const ParameterScope> params) {

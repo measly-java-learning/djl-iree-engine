@@ -50,7 +50,7 @@ TEST_CASE("loads a valid vmfb", "[runtime]") {
   REQUIRE(runtime != nullptr);
 }
 
-// Pins the boundary the invoke() output guards enforce (issue #15): an output
+// Pins the boundary the invoke() output guards enforce: an output
 // of exactly INT32_MAX bytes is the largest jint that allocateDirect can take;
 // one byte more would truncate. The >2 GiB path itself is untested (would need
 // a 2 GiB fixture); this case fixes the limit the guard is compiled against.
@@ -157,7 +157,7 @@ TEST_CASE("aligned host allocation imports zero-copy on the pinned runtime",
   measly::iree::AlignedFree(lhs);
 }
 
-// --- W4-adjacent spike (2026-08-04): cached staging + direct output map -------
+// --- Cached staging + direct output map --------------------------------------
 
 // Cached staging (StagingMode::kCachedMapWrite / kCachedTransfer): one
 // grow-only staging buffer per input slot, reused across calls. The input
@@ -336,7 +336,7 @@ TEST_CASE("Invoke after InvokeViews releases pending views", "[runtime][views]")
 // the imported input buffer is freed immediately after Invoke returns, then
 // another invoke runs with a fresh input. If anything IREE-side still held a
 // pointer into the freed block, the second invoke would be a use-after-free
-// under ASan — the guarantee the Cleaner-based Java path (§5) relies on: a
+// under ASan — the guarantee the Cleaner-based Java path relies on: a
 // buffer is only freed when no live call can be using it.
 TEST_CASE("aligned buffer freed after invoke leaves no dangling import",
           "[runtime][import]") {
@@ -366,19 +366,18 @@ TEST_CASE("aligned buffer freed after invoke leaves no dangling import",
   REQUIRE(outputs2.size() == 1);
 }
 
-// Compiler-free post-link smoke test (Task 2, brief §Step 4): the dist
-// artifact ships its own add.vmfb, compiled by the dist project itself with
-// no compiler present anywhere in *our* build. Handover §5 describes it in
-// prose as "four int32 inputs" -- that prose does NOT match reality. Per
-// Step 4's instruction to determine the signature empirically rather than
-// hand-guess a type constant: `iree-dump-module` on the dist's add.vmfb
-// shows `sync func @add(%input0: tensor<4xf32>, %input1: tensor<4xf32>) ->
-// (%output0: tensor<4xf32>)`, and the element-type constant baked into its
-// bytecode's hal.buffer_view.assert/create calls is 0x21000020 -- that is
-// FLOAT_32, not INT_32 (0x10000020) or SINT_32 (0x11000020). Confirmed by
-// running it: f32 inputs succeed and produce [11,22,33,44]; i32 inputs are
-// rejected with INVALID_ARGUMENT ("expected f32 (21000020) but have i32
-// (10000020)"). Filed as a doc bug against the dist:
+// Compiler-free post-link smoke test: the dist artifact ships its own
+// add.vmfb, compiled by the dist project itself with no compiler present
+// anywhere in *our* build. The signature here is empirical, not taken from the
+// dist's prose, which calls it "four int32 inputs" and is wrong:
+// `iree-dump-module` on the dist's add.vmfb shows `sync func @add(%input0:
+// tensor<4xf32>, %input1: tensor<4xf32>) -> (%output0: tensor<4xf32>)`, and
+// the element-type constant baked into its bytecode's
+// hal.buffer_view.assert/create calls is 0x21000020 -- FLOAT_32, not INT_32
+// (0x10000020) or SINT_32 (0x11000020). Running it agrees: f32 inputs succeed
+// and produce [11,22,33,44]; i32 inputs are rejected with INVALID_ARGUMENT
+// ("expected f32 (21000020) but have i32 (10000020)"). The prose is filed as a
+// doc bug against the dist:
 // https://github.com/measly-java-learning/iree-runtime-dist/issues/5
 TEST_CASE("dist fixture: compiler-free smoke test", "[runtime][dist]") {
   constexpr const char* kDistAddVmfb = IREE_DIST_ADD_VMFB;
@@ -406,7 +405,7 @@ TEST_CASE("dist fixture: compiler-free smoke test", "[runtime][dist]") {
 }
 
 // These four tests exist to WALK the error paths, not merely to assert
-// messages. Task 6 runs them under LSan, where a dropped iree_status_t on any
+// messages. They also run under LSan, where a dropped iree_status_t on any
 // of these paths shows up as a leak. Error paths are the least hand-tested
 // code in any runtime, which is exactly why they get forced here.
 
@@ -438,19 +437,16 @@ TEST_CASE("rejects a shape mismatch", "[runtime][errors]") {
   };
   REQUIRE_THROWS_AS(runtime->Invoke(inputs), std::runtime_error);
 }
-// EMPIRICAL DEVIATION FROM THE BRIEF: this case does not throw. module.add's
-// entry function has a fixed compiled signature (tensor<4xf32>). IREE
-// validates the caller-declared element type on an input buffer view against
-// that signature via hal.buffer_view.assert (see
+// module.add's entry function has a fixed compiled signature (tensor<4xf32>).
+// IREE validates the caller-declared element type on an input buffer view
+// against that signature via hal.buffer_view.assert (see
 // iree/runtime/src/iree/modules/hal/utils/buffer_diagnostics.c): a real,
 // recognized-but-mismatched type tag (si32 in place of the expected f32) is
 // rejected with INVALID_ARGUMENT, surfaced here as a thrown
-// std::runtime_error. (An earlier version of this test used a bogus,
-// non-IREE-encoded placeholder tag that hal.buffer_view.assert could not
-// recognize as any type, so it silently slipped through to a miscomputed
-// result instead of being rejected -- that was an artifact of the bad
-// constant, not of IREE ignoring element type. With the real si32 encoding,
-// IREE's own validation catches the mismatch.)
+// std::runtime_error. The tag must be a real IREE encoding for this test to
+// mean anything -- a bogus, non-IREE-encoded placeholder is recognized as no
+// type at all, slips past hal.buffer_view.assert, and produces a miscomputed
+// result rather than a rejection.
 TEST_CASE("rejects a valid-but-mismatched element type", "[runtime][errors]") {
   auto bytes = ReadFile(kAddVmfb);
   auto runtime = IreeRuntime::Load(bytes, kEntryPoint);
@@ -730,7 +726,8 @@ TEST_CASE("Stats replaces rather than accumulates a regrown staging slot") {
     // Shape mismatch is expected and irrelevant here; the staging already happened.
   }
 
-  // 64, not 32 + 64: the old contribution is retired before the new one lands.
+  // 64, not 32 + 64: a slot's previous contribution is retired before its
+  // replacement lands.
   REQUIRE(runtime->Stats().stagingBytes == 2 * 8 * sizeof(float));
 
   // And shrinking back does not shrink the footprint — the buffers are grow-only.

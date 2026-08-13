@@ -207,12 +207,12 @@ Java_org_measly_iree_jni_IreeNative_load(JNIEnv* env, jclass,
   }
 
   try {
-    // Staging default: kCachedMapWrite — the winning cached-staging mode from
-    // the staging/output spike (docs/2026-08-04-staging-and-output-findings.md).
-    // The staged fallback reuses a grow-only per-slot staging buffer instead
-    // of allocating a fresh HAL buffer per call (recovering ~85% of the
-    // staged-vs-wrapped delta at >= 4 MB); ImportOutcome semantics are
-    // unchanged (kStaged still means "copied"). The other Load overloads keep
+    // Staging default: kCachedMapWrite — the fastest cached-staging mode
+    // measured in docs/2026-08-04-staging-and-output-findings.md. The staged
+    // fallback reuses a grow-only per-slot staging buffer instead of
+    // allocating a fresh HAL buffer per call, recovering ~85% of the
+    // staged-vs-wrapped delta at >= 4 MB. ImportOutcome means the same thing
+    // in every mode (kStaged means "copied"). The other Load overloads select
     // kAllocatePerCall for the native tests/harness.
     auto runtime = IreeRuntime::Load(bytes, entry_copy, driver_copy, parameters,
                                      IreeRuntime::StagingMode::kCachedMapWrite);
@@ -413,15 +413,15 @@ Java_org_measly_iree_jni_IreeNative_invoke(JNIEnv* env, jclass, jlong handle,
       const auto& layout = layouts[i];
       // allocateDirect takes an int: an output at or above 2 GiB would be
       // silently truncated (jint) and then map_read into a short buffer —
-      // a heap write overflow. Reject it instead (issue #15).
+      // a heap write overflow. Reject it instead.
       if (measly::iree::exceedsJniArrayLimit(layout.nbytes)) {
         runtime->ReleaseOutputs();
         ThrowJava(env, "IREE output exceeds the 2GB JNI direct-buffer limit");
         return nullptr;
       }
       // Direct buffer the JVM owns; the facade map_reads straight into it, so
-      // this is the output path's ONLY copy — the intermediate owning vector
-      // (and the JNI memcpy) are gone. Nothing IREE-side outlives
+      // this is the output path's ONLY copy — no intermediate owning vector,
+      // no second JNI memcpy. Nothing IREE-side outlives
       // ReleaseOutputs() below; execution is synchronous, so the map_read
       // completes before the views are released.
       jobject owned = env->CallStaticObjectMethod(
@@ -522,7 +522,7 @@ Java_org_measly_iree_jni_IreeNative_lastImportOutcomes(JNIEnv* env, jclass,
   return result;
 }
 
-// --- W4 prototype: engine-allocated, 64-byte-aligned direct buffers ----------
+// --- Engine-allocated, 64-byte-aligned direct buffers ------------------------
 //
 // Borrow contract (see IreeNDManager): the buffer is engine-allocated native
 // memory exposed to Java via NewDirectByteBuffer, and freed by the registered
