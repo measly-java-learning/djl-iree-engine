@@ -48,8 +48,8 @@ repositories { mavenCentral() }
 
 dependencies {
     implementation("ai.djl:api:0.36.0")
-    implementation("org.measly:djl-iree-engine:1.3.0")
-    runtimeOnly("org.measly:djl-iree-engine:1.3.0") {
+    implementation("org.measly:djl-iree-engine:1.4.0")
+    runtimeOnly("org.measly:djl-iree-engine:1.4.0") {
         // Pick the platform that matches the runtime host:
         // linux-x86_64, linux-aarch64, or windows-x86_64.
         capabilities { requireCapability("org.measly:djl-iree-engine-linux-x86_64") }
