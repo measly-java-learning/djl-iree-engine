@@ -139,6 +139,22 @@ class IreeNativeTest {
     }
 
     /**
+     * bufferAddress answers 0 — the value that already means "no address"
+     * throughout this class — for every input that has no native address,
+     * rather than handing null to GetDirectBufferAddress, where the JNI spec
+     * gives it no defined behavior. This package is public for JNI's sake, so
+     * the method is reachable from outside the engine.
+     */
+    @Test
+    void bufferAddressReturnsZeroWithoutANativeAddress() {
+        assertEquals(0L, IreeNative.bufferAddress(null), "null has no address");
+        assertEquals(
+                0L,
+                IreeNative.bufferAddress(ByteBuffer.allocate(16)),
+                "a heap buffer is not direct (JNI spec)");
+    }
+
+    /**
      * The core claim behind engine-allocated buffers: an aligned buffer
      * imports zero-copy deterministically (both inputs are aligned, so both
      * outcomes must be WRAPPED — a plain JDK buffer for either input would

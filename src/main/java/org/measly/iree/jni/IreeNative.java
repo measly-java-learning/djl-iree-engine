@@ -122,19 +122,20 @@ public final class IreeNative {
 
     /**
      * Returns the address of a direct {@link ByteBuffer}'s backing memory, or {@code 0} for a
-     * non-direct buffer (per the JNI spec).
+     * non-direct buffer (per the JNI spec) or for {@code null}.
      *
-     * <p>{@code buffer} must be non-null: unlike {@link #invoke}, which explicitly guards its
-     * own buffer arguments, this method passes {@code buffer} straight to the JNI
-     * {@code GetDirectBufferAddress} intrinsic. Calling it with {@code null} is undefined
-     * behavior in native code, not a checked error.
+     * <p>{@code 0} is this boundary's "no address" value throughout — it is also what
+     * {@link #freeDirectAligned(long)} accepts as a no-op — so a {@code null} buffer answers
+     * {@code 0} rather than throwing. It never reaches the JNI
+     * {@code GetDirectBufferAddress} intrinsic, which has no defined behavior on {@code null}.
      *
      * <p>The JVM guarantees nothing stronger than 8-byte alignment for its own direct buffers;
      * the engine's aligned buffers (see {@link #allocateDirectAligned}) are 64-byte-aligned by
      * construction.
      *
-     * @param buffer a non-null {@link ByteBuffer}
-     * @return the buffer's native address, or {@code 0} if {@code buffer} is not direct
+     * @param buffer a {@link ByteBuffer}, or {@code null}
+     * @return the buffer's native address, or {@code 0} if {@code buffer} is {@code null} or
+     *     not direct
      */
     public static native long bufferAddress(ByteBuffer buffer);
 
