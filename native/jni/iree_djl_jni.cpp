@@ -278,18 +278,19 @@ Java_org_measly_iree_jni_IreeNative_bufferAddress(JNIEnv* env, jclass,
 // ByteBuffer (via ByteBuffer.allocateDirect + ReadOutput(), a copy) and then
 // releasing the views with ReleaseOutputs(). Once InvokeViews() has
 // succeeded, every path below reaches ReleaseOutputs() exactly once --
-// success, the 2 GiB-limit throw, and the generic catch block all call it --
-// with one deliberate, documented exception: see the FindClass/GetMethodID
-// lookups a few lines down.
+// success, the 2 GiB-limit throw, and the generic catch block all call it.
+// The IreeTensor/ByteBuffer lookups are hoisted above InvokeViews() to keep
+// that true: they can fail, and doing them first means their failure paths
+// have no views to release.
 //
 // Local-reference discipline: inputBuffers[i]'s and inputShapes[i]'s locals
 // from GetObjectArrayElement are never explicitly deleted inside the input
 // loop -- unlike ToStringVector()'s string loop -- because `count` is bounded
 // by the model's own input arity (small, fixed per model) rather than by
 // caller-supplied data of unbounded size, so the default local-ref table is
-// not at risk here. tensor_class, ctor, bb, and allocate are looked up once
-// before the output loop specifically because they are loop-invariant (see
-// the comment ahead of the `bb`/`allocate` lookups); per-output locals
+// not at risk here. tensor_class, ctor, bb, and allocate are looked up once,
+// before InvokeViews(), because they are loop-invariant and because failing
+// there is cheaper (see the comment at the hoist); per-output locals
 // (owned, shape, tensor) ARE explicitly deleted at the end of each output
 // iteration, since the output count is caller/model-controlled and looping
 // without deleting them would accumulate one triple of locals per output.
@@ -369,6 +370,26 @@ Java_org_measly_iree_jni_IreeNative_invoke(JNIEnv* env, jclass, jlong handle,
   }
   env->ReleaseIntArrayElements(inputTypes, types, JNI_ABORT);
 
+  // The four output-side lookups are hoisted ABOVE InvokeViews() on purpose:
+  // none of them depend on the invocation, and once InvokeViews() succeeds the
+  // runtime holds output views that only ReleaseOutputs() frees. Looking them
+  // up here means a failure (a pending exception -- OutOfMemoryError during
+  // class loading, or NoSuchMethodError against a mismatched IreeTensor) is
+  // just an early return with no views live, instead of four more paths that
+  // have to remember to release. All four are also loop-invariant, so this is
+  // where they belong anyway: one lookup each, no per-iteration local-ref
+  // accumulation in the output loop below.
+  jclass tensor_class = env->FindClass("org/measly/iree/jni/IreeTensor");
+  if (tensor_class == nullptr) return nullptr;
+  jmethodID ctor = env->GetMethodID(tensor_class, "<init>",
+                                    "(Ljava/nio/ByteBuffer;[JI)V");
+  if (ctor == nullptr) return nullptr;
+  jclass bb = env->FindClass("java/nio/ByteBuffer");
+  if (bb == nullptr) return nullptr;
+  jmethodID allocate = env->GetStaticMethodID(bb, "allocateDirect",
+                                              "(I)Ljava/nio/ByteBuffer;");
+  if (allocate == nullptr) return nullptr;
+
   std::vector<measly::iree::OutputLayout> layouts;
   try {
     layouts = runtime->InvokeViews(inputs);
@@ -377,33 +398,10 @@ Java_org_measly_iree_jni_IreeNative_invoke(JNIEnv* env, jclass, jlong handle,
     return nullptr;
   }
 
-  // NOTE (documented, not fixed -- see the file's task notes): InvokeViews()
-  // above has already succeeded, so the runtime is now holding output views
-  // that only ReleaseOutputs() will release. Each of these four lookups can
-  // fail (a pending exception, e.g. OutOfMemoryError or NoSuchMethodError)
-  // and returns nullptr WITHOUT calling ReleaseOutputs() first, unlike every
-  // other early return past this point. These are core-JDK class/methodID
-  // lookups with hardcoded signatures; their failure is effectively
-  // JVM-fatal, which is why this is not treated as a caller-visible leak in
-  // practice -- but it is a real gap in the release-on-every-path property
-  // the rest of this function maintains.
-  jclass tensor_class = env->FindClass("org/measly/iree/jni/IreeTensor");
-  if (tensor_class == nullptr) return nullptr;
-  jmethodID ctor = env->GetMethodID(tensor_class, "<init>",
-                                    "(Ljava/nio/ByteBuffer;[JI)V");
-  if (ctor == nullptr) return nullptr;
-
-  // Loop-invariant: java/nio/ByteBuffer's class and its allocateDirect
-  // methodID don't change per output, so look them up once here rather than
-  // inside the loop (avoids per-iteration local-ref accumulation and
-  // redundant lookups). Same caveat as tensor_class/ctor above: a failure
-  // here also returns without releasing the pending output views.
-  jclass bb = env->FindClass("java/nio/ByteBuffer");
-  if (bb == nullptr) return nullptr;
-  jmethodID allocate = env->GetStaticMethodID(bb, "allocateDirect",
-                                              "(I)Ljava/nio/ByteBuffer;");
-  if (allocate == nullptr) return nullptr;
-
+  // From here to the end of the function the output views are live. Every
+  // return below releases them: tensor_class, ctor, bb and allocate are
+  // already in hand (see the hoist above), so nothing between here and
+  // ReleaseOutputs() can bail out without going through a release site.
   try {
     jobjectArray result =
         env->NewObjectArray(static_cast<jsize>(layouts.size()), tensor_class, nullptr);

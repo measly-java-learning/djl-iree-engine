@@ -85,11 +85,7 @@ public final class IreeNative {
      * {@link #allocateDirectAligned}) already populated with a copy of that output — there is
      * nothing further for the caller to release. Once native invocation succeeds, the runtime's
      * output views are released on every path that follows — success, the 2 GiB-limit throw, and
-     * the generic catch block all reach it — with one narrow exception: a handful of core-JDK
-     * class/method lookups done once per call (for {@code IreeTensor} and
-     * {@code ByteBuffer.allocateDirect}) return early without releasing them if they fail. Those
-     * lookups failing is effectively JVM-fatal, so this is not a caller-visible leak in practice,
-     * but it is not a guarantee this method makes.
+     * the generic catch block all reach it — with no exceptions.
      *
      * @param handle a still-open handle from {@link #load}
      * @param inputs one direct {@link ByteBuffer} per model input
