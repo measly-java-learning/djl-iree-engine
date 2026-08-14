@@ -242,17 +242,22 @@ Java_org_measly_iree_jni_IreeNative_close(JNIEnv*, jclass, jlong handle) {
 // aligned-buffer Cleaner wiring; the JVM guarantees nothing stronger than
 // long (8-byte) alignment for its own direct buffers.
 //
-// Precondition (see IreeNative.bufferAddress's javadoc): buffer is non-null.
-// Unlike invoke() below, which explicitly null-guards the same underlying
-// call before using it (see the `buffer == nullptr` check ahead of
-// GetDirectBufferAddress there), this function passes buffer straight to
-// GetDirectBufferAddress with no null check of its own. Calling this with
-// null is undefined behavior in native code, not a checked Java error. No
-// allocation, no local references beyond the borrowed `buffer` argument, and
-// no error path: this call cannot itself throw.
+// A null buffer answers 0 rather than reaching GetDirectBufferAddress, for
+// which the JNI spec defines no behavior on null: under -Xcheck:jni the JVM
+// aborts the whole process ("FATAL ERROR in native method: Null object passed
+// to JNI"), and without it the behavior is undefined. 0 is already this
+// boundary's "no address" value -- what a non-direct buffer returns, and what
+// freeDirectAligned() treats as a no-op -- so null needs no separate signal.
+// invoke() below null-guards the same call the same way.
+//
+// No allocation, no local references beyond the borrowed `buffer` argument,
+// and no error path: this call cannot itself throw.
 extern "C" JNIEXPORT jlong JNICALL
 Java_org_measly_iree_jni_IreeNative_bufferAddress(JNIEnv* env, jclass,
                                                   jobject buffer) {
+  if (buffer == nullptr) {
+    return 0;
+  }
   return reinterpret_cast<jlong>(env->GetDirectBufferAddress(buffer));
 }
 
@@ -561,8 +566,9 @@ Java_org_measly_iree_jni_IreeNative_allocateDirectAligned(JNIEnv* env, jclass,
   return buffer;
 }
 
-// Called exactly once per buffer, from the Cleaner. 0 is a no-op (bufferAddress
-// of a non-direct buffer); a genuine double-free is undefined behavior, not
+// Called exactly once per buffer, from the Cleaner. 0 is a no-op (what
+// bufferAddress answers for a null or non-direct buffer); a genuine
+// double-free is undefined behavior, not
 // safe to rely on — see IreeNative.freeDirectAligned's javadoc.
 extern "C" JNIEXPORT void JNICALL
 Java_org_measly_iree_jni_IreeNative_freeDirectAligned(JNIEnv*, jclass,
