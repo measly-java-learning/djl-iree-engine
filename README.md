@@ -285,6 +285,44 @@ relative to the kernel; for a large compute-bound model it disappears into noise
 staged-import rate in the statistics above tells you whether inputs are being copied at all,
 which is the first thing to establish.
 
+### Allocator (`LD_PRELOAD`)
+
+Swapping the JVM's C allocator for `tcmalloc` or `mimalloc` via `LD_PRELOAD` gave a measurable,
+if modest, win on a small-input workload — 30 tiny (16-byte) inputs, the shape where per-call
+malloc overhead (shape vectors, per-call bookkeeping) is largest relative to payload size:
+
+| Allocator | `ManyInputsBenchmark.steadyState` |
+|-----------|------------------------------------|
+| glibc (default) | 39.754 ± 1.770 us/op |
+| tcmalloc | 37.399 ± 1.855 us/op (~6% faster) |
+| mimalloc | 37.760 ± 2.113 us/op (~5% faster) |
+
+That's free for any workload shaped like this — many small inputs, latency-sensitive — since it
+costs nothing but an `LD_PRELOAD` env var. It did **not** move the needle on a large,
+compute-bound model (MobileNetV2) in the same measurement.
+
+To measure it against your own model:
+
+```bash
+# baseline
+java -jar your-app.jar ...
+
+# tcmalloc
+LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libtcmalloc_minimal.so.4 java -jar your-app.jar ...
+
+# mimalloc
+LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libmimalloc.so.2 java -jar your-app.jar ...
+```
+
+(Library paths are Debian/Ubuntu; adjust for your distribution.)
+
+**`LD_PRELOAD` is process-global, not scoped to this engine.** It replaces the allocator for the
+entire JVM process — every other library, the GC's own native allocations, anything else loaded
+into that process — not just this engine's native calls. Test extensively under your own
+workload and deployment environment before relying on it in production; a win here on a
+synthetic marshalling-heavy benchmark is not a guarantee it helps (or is even safe) alongside
+whatever else shares that process.
+
 ## Threading
 
 `IreeSymbolBlock.forward()` is not thread-safe on the same model. Use one
