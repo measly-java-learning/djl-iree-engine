@@ -44,6 +44,19 @@ val exportModels = tasks.register<Exec>("exportModels") {
     commandLine("uv", "run", script.absolutePath)
 }
 
+// Bench-only fixture isolating input-marshalling cost (see tools/export_manyinputs.sh);
+// not needed by `run`, only by ManyInputsBenchmark.
+val exportManyInputs = tasks.register<Exec>("exportManyInputs") {
+    group = "build"
+    description = "Generate the 30-input sum .vmfb used by ManyInputsBenchmark."
+    val out = modelsDir.get().asFile
+    val script = rootProject.file("tools/export_manyinputs.sh")
+    inputs.file(script)
+    outputs.file(out.resolve("manyinputs_30.vmfb"))
+    environment("IREE_FIXTURE_DIR", out.absolutePath)
+    commandLine(script.absolutePath)
+}
+
 // Pass the models directory to the JVM so ModelArtifacts can resolve it at runtime.
 // dependsOn(exportModels) guarantees the .vmfb exists: absent, it is generated; present
 // (outputs up-to-date), the task is skipped and uv is never invoked. Without this, a
@@ -59,7 +72,7 @@ tasks.named<JavaExec>("run") {
 // a plain `./gradlew :example:jmh` should always execute. (exportModels stays cached; only
 // the measurement itself is forced.)
 tasks.named("jmh") {
-    dependsOn(exportModels)
+    dependsOn(exportModels, exportManyInputs)
     outputs.upToDateWhen { false }
 }
 
