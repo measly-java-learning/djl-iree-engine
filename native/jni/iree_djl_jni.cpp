@@ -33,6 +33,12 @@ using measly::iree::InputDesc;
 using measly::iree::IreeRuntime;
 using measly::iree::ParameterScope;
 
+// jlong is a JNI-spec-guaranteed 64-bit signed integer, not literally int64_t
+// on every platform; this is what licenses invoke()'s reinterpret_cast of
+// InputDesc::shape's jlong* into a GetLongArrayRegion destination (see
+// invoke() below) instead of an element-wise copy.
+static_assert(sizeof(jlong) == sizeof(int64_t), "jlong/int64_t size mismatch");
+
 namespace {
 
 jclass g_runtime_exception = nullptr;
