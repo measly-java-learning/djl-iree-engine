@@ -47,7 +47,7 @@ plugins { application }
 repositories { mavenCentral() }
 
 dependencies {
-    implementation("ai.djl:api:0.36.0")
+    implementation("ai.djl:api:0.38.0")
     implementation("org.measly:djl-iree-engine:1.4.0")
     runtimeOnly("org.measly:djl-iree-engine:1.4.0") {
         // Pick the platform that matches the runtime host:

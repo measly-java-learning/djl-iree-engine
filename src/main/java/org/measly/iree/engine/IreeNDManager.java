@@ -95,7 +95,9 @@ public class IreeNDManager extends BaseNDManager {
     public NDArray create(Buffer data, Shape shape, DataType dataType) {
         int size = Math.toIntExact(shape.size());
         BaseNDManager.validateBuffer(data, dataType, size);
-        ByteBuffer direct = allocateDirect(size * dataType.getNumOfBytes());
+        // multiplyExact, not *: a 32-bit wrap here would allocate a buffer smaller than the shape
+        // claims, and the native side sizes its reads from the shape (GHSA-cqqg-r2fh-7jjm).
+        ByteBuffer direct = allocateDirect(Math.multiplyExact(size, dataType.getNumOfBytes()));
         copyBuffer(data, direct);
         direct.rewind();
         return new IreeNDArray(this, direct, shape, dataType);
