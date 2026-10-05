@@ -311,6 +311,49 @@ RuntimeStats IreeRuntime::Stats() const {
 
 namespace {
 
+// Throws unless the caller's buffer covers every byte its declared shape and
+// element type make IREE read. Borrows |input| for the duration of the call;
+// retains nothing.
+//
+// The shape, not nbytes, is what IREE sizes reads from, and it only polices the
+// mismatch on some paths: the zero-copy import and the cached staging modes
+// already fail inside IREE (measured against add.vmfb), but kAllocatePerCall
+// sizes its staging buffer from the shape and copies just nbytes into it, so a
+// short buffer runs the kernel over uninitialized allocator memory and can
+// return stale bytes in the outputs (GHSA-cqqg-r2fh-7jjm, where the short
+// buffer came from a 32-bit wrap on the Java side). Checking here covers every
+// path the same way, ahead of any allocation.
+//
+// The arithmetic is overflow-checked by division rather than with
+// __builtin_mul_overflow, which MSVC lacks. A negative dimension is rejected
+// before it can become a huge unsigned one inside IREE. Element types with a
+// zero bit count (opaque, or an unknown tag) give a minimum of zero and are
+// left to IREE's own type check.
+void RequireInputCoversShape(const InputDesc& input, size_t input_index) {
+  constexpr uint64_t kMax = UINT64_MAX;
+  uint64_t bits = iree_hal_element_bit_count(
+      static_cast<iree_hal_element_type_t>(input.elementType));
+  for (const int64_t dim : input.shape) {
+    if (dim < 0) {
+      throw std::runtime_error("input " + std::to_string(input_index) +
+                               " has a negative dimension");
+    }
+    const uint64_t d = static_cast<uint64_t>(dim);
+    if (d != 0 && bits > kMax / d) {
+      throw std::runtime_error("input " + std::to_string(input_index) +
+                               " shape overflows a 64-bit byte count");
+    }
+    bits *= d;
+  }
+  // Round up: a packed sub-byte tensor still occupies its final partial byte.
+  const uint64_t required = bits / 8 + (bits % 8 != 0 ? 1 : 0);
+  if (static_cast<uint64_t>(input.nbytes) < required) {
+    throw std::runtime_error("input " + std::to_string(input_index) + " buffer holds " +
+                             std::to_string(input.nbytes) + " bytes but its shape needs " +
+                             std::to_string(required));
+  }
+}
+
 // Attempts a zero-copy import of host memory; falls back to a staged copy when
 // the allocator's preconditions (memory type / usage / alignment) are unmet.
 // Returns the buffer view and reports which path was taken. `input_index` is
@@ -440,6 +483,9 @@ BufferViewPtr ImportOrCopy(iree_hal_device_t* device,
 // call, so the caller may materialize them after the call is torn down.
 std::vector<BufferViewPtr> RunCall(RuntimeState& state,
                                    std::span<const InputDesc> inputs) {
+  // All inputs up front, so a rejected one costs no IREE call or staging work.
+  for (size_t i = 0; i < inputs.size(); ++i) RequireInputCoversShape(inputs[i], i);
+
   CallGuard call;
   IREE_CHECK_OR_THROW(iree_runtime_call_initialize_by_name(
       state.session.get(),

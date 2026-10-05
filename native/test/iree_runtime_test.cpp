@@ -462,6 +462,58 @@ TEST_CASE("rejects a valid-but-mismatched element type", "[runtime][errors]") {
   REQUIRE_THROWS_AS(runtime->Invoke(inputs), std::runtime_error);
 }
 
+// GHSA-cqqg-r2fh-7jjm: the shape, not nbytes, decides how many bytes IREE
+// reads from an input. A caller whose byte count wrapped can declare a shape
+// that matches the model while handing over a buffer too short for it. Every
+// import path must reject that: the zero-copy import (aligned pointer) and all
+// three staging modes (misaligned pointer). The backing allocation is full
+// size on purpose -- only the declared nbytes is short -- so a missing check
+// shows up as a test failure, not as an out-of-bounds read inside the test.
+TEST_CASE("rejects an input buffer shorter than its shape", "[runtime][errors]") {
+  const auto mode = GENERATE(IreeRuntime::StagingMode::kAllocatePerCall,
+                             IreeRuntime::StagingMode::kCachedMapWrite,
+                             IreeRuntime::StagingMode::kCachedTransfer);
+  const auto misalign = GENERATE(size_t{0}, size_t{1});
+  auto bytes = ReadFile(kAddVmfb);
+  auto runtime = IreeRuntime::Load(bytes, kEntryPoint, "local-sync", {}, mode);
+
+  void* base = ::operator new(4 * sizeof(float) + 64, std::align_val_t{64});
+  // memcpy, not float stores: at misalign 1 a float* store is itself UB.
+  std::byte* lhs = static_cast<std::byte*>(base) + misalign;
+  const float lhs_values[4] = {0.0f, 1.0f, 2.0f, 3.0f};
+  std::memcpy(lhs, lhs_values, sizeof(lhs_values));
+  const float rhs[4] = {10.0f, 20.0f, 30.0f, 40.0f};
+  std::vector<measly::iree::InputDesc> inputs = {
+      {lhs, sizeof(float), {4}, kF32},  // shape says 16 bytes, buffer says 4
+      {rhs, sizeof(rhs), {4}, kF32},
+  };
+
+  REQUIRE_THROWS_AS(runtime->Invoke(inputs), std::runtime_error);
+  ::operator delete(base, std::align_val_t{64});
+}
+
+// A shape whose byte count does not fit 64 bits must be rejected, not wrapped
+// to a small number that a short buffer would then satisfy. 2^62 elements of
+// f32 is 2^64 bytes (exactly 0 after wrapping); a negative dimension becomes a
+// huge unsigned one on the way into IREE.
+TEST_CASE("rejects an input shape whose byte count overflows", "[runtime][errors]") {
+  const auto shape = GENERATE(std::vector<int64_t>{int64_t{1} << 62},
+                              std::vector<int64_t>{int64_t{1} << 31, int64_t{1} << 31},
+                              std::vector<int64_t>{-1},
+                              std::vector<int64_t>{4, -4});
+  auto bytes = ReadFile(kAddVmfb);
+  auto runtime = IreeRuntime::Load(bytes, kEntryPoint);
+
+  const float lhs[4] = {1.0f, 2.0f, 3.0f, 4.0f};
+  const float rhs[4] = {10.0f, 20.0f, 30.0f, 40.0f};
+  std::vector<measly::iree::InputDesc> inputs = {
+      {lhs, sizeof(lhs), shape, kF32},
+      {rhs, sizeof(rhs), {4}, kF32},
+  };
+
+  REQUIRE_THROWS_AS(runtime->Invoke(inputs), std::runtime_error);
+}
+
 TEST_CASE("local-task driver loads and matches local-sync", "[runtime][driver]") {
   auto bytes = ReadFile(kAddVmfb);
   auto runtime = IreeRuntime::Load(bytes, kEntryPoint, "local-task");
