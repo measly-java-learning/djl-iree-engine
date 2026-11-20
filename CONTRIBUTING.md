@@ -244,6 +244,36 @@ On Windows there is no ASan/LSan harness and no TSan gate. CI runs the Catch2 un
 `native/build_qa.sh` and asserts the static-CRT link with
 `native/tests/check_windows_crt.sh` before the DLL is uploaded.
 
+## Coverage
+
+The `coverage` job in `.github/workflows/native-build.yml` uploads two reports to Codecov:
+JaCoCo XML for the Java code (flag `java`) and gcovr Cobertura XML for `native/core` and
+`native/jni` (flag `cpp`). Flags, paths and status-check behaviour live in `codecov.yml`.
+
+`./native/coverage.sh` produces the C++ report. It builds `native/coverage` with
+`-DIREE_DJL_COVERAGE=ON` (GCC `--coverage`, applied only to `iree_djl_core` and the shim),
+runs the Catch2 suites, then runs `test leakTest` against the instrumented `.so` through
+`IREE_LIBRARY_PATH`. Both drivers write into the same `.gcda` files, so the report covers
+the shim as well as the core. Like the UBSan gate it never stages the instrumented `.so`
+into resources, and it splits into a container build phase and a host JVM phase
+(`IREE_DJL_COVERAGE_MODE`, default `auto`):
+
+```bash
+IR_WORKDIR="$PWD" ./native/local_build_wrapper.sh native/coverage.sh   # build, pinned toolchain
+IREE_DJL_COVERAGE_MODE=test ./native/coverage.sh                       # JVM phase + report
+```
+
+Two requirements, both checked by the script:
+
+- **Build at the host path.** gcc bakes absolute object paths into the instrumented `.so`,
+  and the JVM writes its `.gcda` files there. The wrapper mounts the repo at `/workspace` by
+  default; `IR_WORKDIR="$PWD"` mounts it at the host path instead.
+- **A gcov of exactly the compiler's version, plus `gcovr` on the host.** The `.gcda`
+  version stamp encodes the full release, so Ubuntu's `gcov-14` (14.2.0) rejects files from
+  the image's gcc 14.2.1. A container build is therefore read by the image's own gcov,
+  through `native/container_gcov.sh` (needs docker); a host gcov is used only when its
+  version matches exactly. `GCOV` overrides the choice.
+
 ## Regenerating `add.vmfb`
 
 `src/test/resources/models/add.vmfb` is committed, so this is only needed when the fixture

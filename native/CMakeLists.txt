@@ -50,6 +50,11 @@ endif()
 option(IREE_DJL_SANITIZE "Build with ASan/LSan" OFF)
 option(IREE_DJL_TSAN "Build with ThreadSanitizer" OFF)
 option(IREE_DJL_UBSAN "Build with UndefinedBehaviorSanitizer" OFF)
+# gcov line coverage for our own code. Not a sanitizer, and not shipped: native/coverage.sh
+# builds this into native/coverage and reaches the shim through IREE_LIBRARY_PATH, the
+# same way ubsan_gate.sh does. Declared beside the sanitizer switches so the rejections
+# below sit with the others.
+option(IREE_DJL_COVERAGE "Instrument iree_djl_core and the JNI shim for gcov coverage" OFF)
 
 # ASan and TSan are mutually exclusive -- never enable both at once. Checked
 # immediately after both options are declared and before either flag block
@@ -198,6 +203,33 @@ if(IREE_DJL_UBSAN)
   add_link_options(-fsanitize=${IREE_DJL_UBSAN_CHECKS})
 endif()
 
+# Coverage instruments only the two targets we measure -- iree_djl_core and the JNI
+# shim -- via the per-target options further down. Global add_compile_options would
+# also instrument FetchContent'd Catch2 and the test TUs, which the report filters out
+# anyway, so it would buy compile time and nothing else. The link flag IS global:
+# every executable that links iree_djl_core needs libgcov.
+#
+# GCC only. The report side (native/coverage.sh) drives gcov and refuses a gcov whose
+# major version differs from the compiler's, because .gcda files do not cross GCC
+# majors. MSVC has no gcov at all.
+#
+# -fprofile-update=atomic because the local-task driver runs code on IREE worker
+# threads; without it concurrent counter updates race and the counts are wrong (TSan
+# would flag the counters, too).
+#
+# Rejected with the sanitizers: their instrumentation and gcov's compose poorly, and
+# a coverage number taken under ASan measures a Debug+ASan build that nothing ships.
+if(IREE_DJL_COVERAGE)
+  if(WIN32 OR NOT CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    message(FATAL_ERROR "IREE_DJL_COVERAGE needs GCC (gcov); got ${CMAKE_CXX_COMPILER_ID}")
+  endif()
+  if(IREE_DJL_SANITIZE OR IREE_DJL_TSAN OR IREE_DJL_UBSAN)
+    message(FATAL_ERROR "IREE_DJL_COVERAGE does not combine with a sanitizer build")
+  endif()
+  set(IREE_DJL_COVERAGE_FLAGS --coverage -fprofile-update=atomic)
+  add_link_options(--coverage)
+endif()
+
 # Link smoke test (Task 1)
 add_executable(link_smoke_test test/link_smoke_test.cpp)
 target_link_libraries(link_smoke_test PRIVATE iree-runtime-dist::runtime)
@@ -208,6 +240,9 @@ target_include_directories(iree_djl_core PUBLIC "${CMAKE_CURRENT_LIST_DIR}" "${C
 target_link_libraries(iree_djl_core PUBLIC iree-runtime-dist::runtime)
 target_compile_definitions(iree_djl_core
   PUBLIC IREE_STATISTICS_ENABLE=${IREE_DJL_STATISTICS_ENABLE})
+if(IREE_DJL_COVERAGE)
+  target_compile_options(iree_djl_core PRIVATE ${IREE_DJL_COVERAGE_FLAGS})
+endif()
 # The curated iree-runtime-dist::runtime umbrella (libiree_runtime_unified.a)
 # does NOT include the io_parameters stack -- confirmed by nm: only
 # iree_io_file_handle_open lives in the unified archive. Everything else
@@ -309,5 +344,8 @@ if(NOT IREE_DJL_SANITIZE AND NOT IREE_DJL_TSAN)
   # carries an undefined dependency on libubsan.so and System.load fails.
   if(IREE_DJL_UBSAN)
     target_link_options(iree_djl PRIVATE -static-libubsan)
+  endif()
+  if(IREE_DJL_COVERAGE)
+    target_compile_options(iree_djl PRIVATE ${IREE_DJL_COVERAGE_FLAGS})
   endif()
 endif()

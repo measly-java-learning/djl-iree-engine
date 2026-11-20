@@ -12,7 +12,8 @@ set -ex # Fail on error, print commands to log
 #   ITERS=2000 ./native/local_build_wrapper.sh native/build_qa.sh
 #   ./native/local_build_wrapper.sh native/build_variants.sh
 #   IR_MEMORY=12g ./native/local_build_wrapper.sh native/ubsan_gate.sh   # raise the cap
-# build.sh, build_qa.sh and ubsan_gate.sh all chown their outputs back to you on exit (see
+#   IR_WORKDIR="$PWD" ./native/local_build_wrapper.sh native/coverage.sh  # host-path mount
+# build.sh, build_qa.sh, ubsan_gate.sh and coverage.sh all chown their outputs back to you on exit (see
 # native/container_env.sh). Other native/ scripts run through this wrapper do not yet, and will
 # leave root-owned dirs behind.
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -43,6 +44,11 @@ test -n "${IMAGE}" || { echo "empty .engine-build-image" >&2; exit 1; }
 IR_MEMORY="${IR_MEMORY:-8g}"
 IR_CPUSET="${IR_CPUSET:-0-3}"
 
+# Where the repo is mounted inside the container. /workspace by default; native/coverage.sh
+# needs IR_WORKDIR="$PWD" instead, because gcc bakes absolute object paths into an
+# instrumented binary and the host-side JVM run must find them at the same place.
+IR_WORKDIR="${IR_WORKDIR:-/workspace}"
+
 docker run --rm \
     --memory="${IR_MEMORY}" \
     --memory-swap="${IR_MEMORY}" \
@@ -51,7 +57,7 @@ docker run --rm \
     -e HOST_GID="$(id -g)" \
     -e ITERS \
     -e WARMUP \
-    -v "${REPO_ROOT}":/workspace \
-    -w /workspace \
+    -v "${REPO_ROOT}":"${IR_WORKDIR}" \
+    -w "${IR_WORKDIR}" \
     "${IMAGE}" \
-    /bin/bash "/workspace/${TARGET_SCRIPT}"
+    /bin/bash "${IR_WORKDIR}/${TARGET_SCRIPT}"

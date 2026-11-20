@@ -32,6 +32,8 @@ Not an exhaustive task list — see `CONTRIBUTING.md` for everything else.
 ./native/build_qa.sh               # native Catch2 + leak-harness QA, stages into native/qa/
 ./native/ubsan_gate.sh             # UBSan over the JNI shim, driven by the JVM suite
 ./gradlew :example:exportModels    # exports mobilenet_v2.vmfb for the example module
+IR_WORKDIR="$PWD" ./native/local_build_wrapper.sh native/coverage.sh   # coverage, build phase
+IREE_DJL_COVERAGE_MODE=test ./native/coverage.sh   # coverage, JVM phase + gcovr report
 ```
 
 ## Trip-wires
@@ -105,6 +107,12 @@ Not an exhaustive task list — see `CONTRIBUTING.md` for everything else.
   `__attribute__((no_sanitize("undefined")))` on the function, a per-TU
   `set_source_files_properties` override, or `-fno-sanitize=<check>` — each needs a comment
   naming what was given up, or a check silently leaves the gate.
+- **Coverage paths are absolute, and gcov must match exactly.** `native/coverage.sh` fails if
+  its tree was built at a different path than the JVM phase runs from (the wrapper's default
+  `/workspace` mount). Same-major gcov is not enough: Ubuntu's `gcov-14` (14.2.0) rejects
+  `.gcda` files from the image's gcc 14.2.1 (stamp `B42 ` vs `B42*`) and gcovr then dies with
+  a misleading "output file doesn't exist". The script reads container builds through
+  `native/container_gcov.sh` for that reason.
 - **`oomTest` and `stressTest` do not run in CI.** `oomTest` needs pip `iree-compile` for
   its fixture. It is the only task that drives the output-marshalling allocation-failure
   paths, so the JNI failure contract is verified only when someone runs the full local
