@@ -1,0 +1,23 @@
+# Codecov configuration. Reports are uploaded by the `coverage` job in
+# .github/workflows/native-build.yml; native/coverage.sh produces the C++ one.
+
+coverage:
+  status:
+    # Informational while the baseline settles: the checks report on every PR but never
+    # block a merge. Drop `informational` to make them gates.
+    project:
+      default:
+        informational: true
+    patch:
+      default:
+        informational: true
+
+flag_management:
+  individual_flags:
+    - name: java
+      paths:
+        - src/main/java/
+    - name: cpp
+      paths:
+        - native/core/
+        - native/jni/
