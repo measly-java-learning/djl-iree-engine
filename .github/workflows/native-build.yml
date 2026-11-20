@@ -9,10 +9,25 @@ on:
 
 jobs:
   build-iree-shim:
-    uses: ./.github/workflows/native-build-job.yml
+    uses: $/.github/workflows/native-build-job.yml
     permissions:
       contents: read
  
+  lockfile:
+    # Fails when actions.lock is out of sync with the workflows, or when a
+    # locked commit no longer verifies upstream. Run `gh actions-lock` to fix.
+    runs-on: ubuntu-slim
+    permissions:
+      contents: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - run: gh extension install github/gh-actions-lock --pin v0.4.1
+      - run: gh actions-lock --verify
+
   # setup-java action repo: https://github.com/actions/setup-java
   build-java-package:
     runs-on: ubuntu-latest
@@ -22,7 +37,7 @@ jobs:
       pull-requests: read
     needs: build-iree-shim
     steps:
-        - uses: actions/checkout@v7
+        - uses: actions/checkout@v7.0.1
 
         # Fixture portability: every committed .vmfb must carry cpu = "generic" and an
         # OS-agnostic embedded-ELF triple, so it runs on any CPU of its architecture and
@@ -43,7 +58,7 @@ jobs:
           # Because the artifact isn't the full `src/main/resources/native`
           # we need to give `download-artifact` a target path
         - name: Download the libiree_djl shim
-          uses: actions/download-artifact@v8
+          uses: actions/download-artifact@v8.0.2
           with:
             pattern: iree-libs-*
             path: src/main/resources/native/
@@ -60,7 +75,7 @@ jobs:
         # https://github.com/gradle/actions
         # This has enhanced caching 
         - name: Setup Gradle
-          uses: gradle/actions/setup-gradle@v6
+          uses: gradle/actions/setup-gradle@v6.4.1
         - name: Build and test the Java package
           run: |
               ./gradlew build
@@ -80,7 +95,7 @@ jobs:
         # reproduction stays a local gate by decision, not by oversight. See
         # docs/superpowers/specs/2026-08-12-ubsan-and-jni-checking-design.md.
         - name: Download the UBSan-instrumented shim
-          uses: actions/download-artifact@v8
+          uses: actions/download-artifact@v8.0.2
           with:
             name: iree-ubsan-shim-linux-x86_64
             path: native/ubsan/
