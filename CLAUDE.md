@@ -107,10 +107,12 @@ IREE_DJL_COVERAGE_MODE=test ./native/coverage.sh   # coverage, JVM phase + gcovr
   `__attribute__((no_sanitize("undefined")))` on the function, a per-TU
   `set_source_files_properties` override, or `-fno-sanitize=<check>` — each needs a comment
   naming what was given up, or a check silently leaves the gate.
-- **Coverage paths are absolute.** `native/coverage.sh` fails if its tree was built at a
-  different path than the JVM phase runs from (the wrapper's default `/workspace` mount), and
-  if no gcov matches the compiler's major version. Neither is worked around by design: either
-  one silently yields a 0% or unreadable shim report.
+- **Coverage paths are absolute, and gcov must match exactly.** `native/coverage.sh` fails if
+  its tree was built at a different path than the JVM phase runs from (the wrapper's default
+  `/workspace` mount). Same-major gcov is not enough: Ubuntu's `gcov-14` (14.2.0) rejects
+  `.gcda` files from the image's gcc 14.2.1 (stamp `B42 ` vs `B42*`) and gcovr then dies with
+  a misleading "output file doesn't exist". The script reads container builds through
+  `native/container_gcov.sh` for that reason.
 - **`oomTest` and `stressTest` do not run in CI.** `oomTest` needs pip `iree-compile` for
   its fixture. It is the only task that drives the output-marshalling allocation-failure
   paths, so the JNI failure contract is verified only when someone runs the full local

@@ -161,8 +161,8 @@ jobs:
       - name: Install gcovr
         run: pipx install gcovr==8.4
 
-      # coverage.sh checks for a gcov whose major version matches the container's gcc and
-      # names the package to install when it is missing.
+      # gcov itself runs from the pinned image (native/container_gcov.sh): the runner's
+      # gcov-14 is 14.2.0, and it rejects .gcda files written by the image's 14.2.1.
       - name: JVM suite against the coverage shim, then the gcovr report
         env:
           IREE_DJL_COVERAGE_MODE: test

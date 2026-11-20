@@ -104,23 +104,29 @@ if [ "${_built_from}" != "${REPO_ROOT}/native" ]; then
   exit 1
 fi
 
-# gcov must match the compiler's major version: the .gcda/.gcno format changes between GCC
-# majors, and a mismatched gcov either refuses the files or misreads them. The compiler
-# version comes from the tree itself, so this holds whichever toolchain built it.
+# gcov must match the compiler EXACTLY. The .gcda/.gcno version stamp encodes the release,
+# not just the major: the pinned image's gcc 14.2.1 writes 'B42 ', Ubuntu's gcov-14 (14.2.0)
+# expects 'B42*', warns on every file and exits 3, and gcovr throws the result away (measured
+# in CI). So a host gcov is used only when its version string equals the compiler's -- the
+# host-native build case. Otherwise the gcov shipped in the pinned image runs, through
+# native/container_gcov.sh. The compiler version comes from the tree itself.
 _cc_ver="$(sed -n 's/^set(CMAKE_CXX_COMPILER_VERSION "\(.*\)")$/\1/p' \
   "${BUILD_DIR}"/CMakeFiles/*/CMakeCXXCompiler.cmake | head -1)"
 _cc_major="${_cc_ver%%.*}"
-_gcov_major() { "$1" --version 2>/dev/null | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | tail -1 | cut -d. -f1; }
+_gcov_ver() { "$1" --version 2>/dev/null | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1; }
 if [ -z "${GCOV:-}" ]; then
   for _cand in "gcov-${_cc_major}" gcov; do
-    if command -v "${_cand}" >/dev/null 2>&1 && [ "$(_gcov_major "${_cand}")" = "${_cc_major}" ]; then
+    if command -v "${_cand}" >/dev/null 2>&1 && [ "$(_gcov_ver "${_cand}")" = "${_cc_ver}" ]; then
       GCOV="${_cand}"; break
     fi
   done
 fi
-if [ -z "${GCOV:-}" ] || [ "$(_gcov_major "${GCOV}")" != "${_cc_major}" ]; then
-  echo "need gcov ${_cc_major}.x to match the compiler that built ${BUILD_DIR} (gcc ${_cc_ver})." >&2
-  echo "Install it (Ubuntu: apt install gcc-${_cc_major}) or point GCOV at one." >&2
+if [ -z "${GCOV:-}" ] && command -v docker >/dev/null 2>&1; then
+  GCOV="${REPO_ROOT}/native/container_gcov.sh"
+fi
+if [ -z "${GCOV:-}" ] || [ "$(_gcov_ver "${GCOV}")" != "${_cc_ver}" ]; then
+  echo "need a gcov of exactly ${_cc_ver} to read ${BUILD_DIR} (got: ${GCOV:-none})." >&2
+  echo "A container build reads through native/container_gcov.sh, which needs docker." >&2
   exit 1
 fi
 command -v gcovr >/dev/null 2>&1 || { echo "gcovr not on PATH (pip install gcovr)" >&2; exit 1; }
@@ -144,15 +150,9 @@ if ! find "${BUILD_DIR}" -name 'iree_djl_jni.cpp.gcda' | grep -q .; then
 fi
 
 echo "--- gcovr report (gcov: ${GCOV}) ---"
-# source_not_found is ignored because a container build records headers that exist only in
-# the container -- Corretto 8's jni.h, gcc-toolset's libstdc++ -- and gcov reports each one
-# missing on the host. Without this, gcovr retries gcov from every parent directory and dies
-# at the first unwritable one. It cannot hide our own sources: the build-path check above
-# guarantees native/ is where the tree recorded it, and the filters drop everything else.
 gcovr --root "${REPO_ROOT}" \
   --filter 'native/core/' --filter 'native/jni/' \
   --gcov-executable "${GCOV}" \
-  --gcov-ignore-errors=source_not_found \
   --cobertura "${BUILD_DIR}/coverage.xml" \
   --print-summary \
   "${BUILD_DIR}"

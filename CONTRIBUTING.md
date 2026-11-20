@@ -268,9 +268,11 @@ Two requirements, both checked by the script:
 - **Build at the host path.** gcc bakes absolute object paths into the instrumented `.so`,
   and the JVM writes its `.gcda` files there. The wrapper mounts the repo at `/workspace` by
   default; `IR_WORKDIR="$PWD"` mounts it at the host path instead.
-- **A gcov matching the compiler's major version, plus `gcovr`.** `.gcda` files do not
-  cross GCC majors, so a container build needs the host's `gcov-<major>` for that version
-  (on Ubuntu, `apt install gcc-<major>`); `GCOV` overrides the choice.
+- **A gcov of exactly the compiler's version, plus `gcovr` on the host.** The `.gcda`
+  version stamp encodes the full release, so Ubuntu's `gcov-14` (14.2.0) rejects files from
+  the image's gcc 14.2.1. A container build is therefore read by the image's own gcov,
+  through `native/container_gcov.sh` (needs docker); a host gcov is used only when its
+  version matches exactly. `GCOV` overrides the choice.
 
 ## Regenerating `add.vmfb`
 
