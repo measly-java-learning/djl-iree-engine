@@ -144,9 +144,15 @@ if ! find "${BUILD_DIR}" -name 'iree_djl_jni.cpp.gcda' | grep -q .; then
 fi
 
 echo "--- gcovr report (gcov: ${GCOV}) ---"
+# source_not_found is ignored because a container build records headers that exist only in
+# the container -- Corretto 8's jni.h, gcc-toolset's libstdc++ -- and gcov reports each one
+# missing on the host. Without this, gcovr retries gcov from every parent directory and dies
+# at the first unwritable one. It cannot hide our own sources: the build-path check above
+# guarantees native/ is where the tree recorded it, and the filters drop everything else.
 gcovr --root "${REPO_ROOT}" \
   --filter 'native/core/' --filter 'native/jni/' \
   --gcov-executable "${GCOV}" \
+  --gcov-ignore-errors=source_not_found \
   --cobertura "${BUILD_DIR}/coverage.xml" \
   --print-summary \
   "${BUILD_DIR}"
