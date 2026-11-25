@@ -123,15 +123,16 @@ TEST_CASE("import outcome is recorded for every input", "[runtime][import]") {
 }
 
 // The 64-byte contract is authoritative in the pinned dist:
-// IREE_HAL_HEAP_BUFFER_ALIGNMENT = 64 (iree/base/config.h:238-245) —
+// IREE_HAL_HEAP_BUFFER_ALIGNMENT = 64 (iree/base/config.h:276-282) —
 // "Executables are compiled with alignment expectations and the runtime
 // alignment must be greater than or equal to the alignment set in the
 // compiler. External buffers wrapped by HAL buffers must meet this alignment
 // requirement." Measured 2026-07-19
 // (docs/superpowers/specs/2026-07-19-djl-iree-engine-findings.md:17-33) and
 // re-confirmed on the current tree: an aligned allocation imports zero-copy.
-// This assertion pins runtime v3.11.0-11 behavior and MUST be revisited on a
-// runtime bump.
+// Re-checked on the v3.14.0-1 bump: still 64, aligned input still wraps.
+// This assertion pins that runtime's behavior and MUST be revisited on the
+// next runtime bump.
 TEST_CASE("aligned host allocation imports zero-copy on the pinned runtime",
           "[runtime][import]") {
   auto bytes = ReadFile(kAddVmfb);

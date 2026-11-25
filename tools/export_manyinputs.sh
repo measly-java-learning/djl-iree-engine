@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Bench-only fixture isolating input-marshalling cost (as opposed to compute or
 # per-tensor byte-copy cost, which bigscale_*.vmfb isolates). Peer of
-# export_bigscale.sh: same compiler pin (iree-base-compiler MUST be 3.11.0 to
-# match the linked runtime commit e4a3b0405d7d23554da26403658d0e8c3c5ecf25),
+# export_bigscale.sh: same compiler pin (iree-base-compiler MUST be 3.14.0 to
+# match the linked runtime commit 5332c68297a68fafd596277d7686f91009ebf1cb),
 # same --iree-hal flags, same IREE_TARGET_TRIPLE pass-through.
 #
 # Writes a single module with ${IREE_MANYINPUTS_COUNT:-30} tensor<4xf32>
@@ -32,7 +32,7 @@ IREE_COMPILE="${IREE_COMPILE:-${repo_root}/.venv/bin/iree-compile}"
 
 if [[ ! -x "${IREE_COMPILE}" ]]; then
   echo "missing ${IREE_COMPILE}. Install with:" >&2
-  echo "  uv pip install --python ${repo_root}/.venv 'iree-base-compiler==3.11.0'" >&2
+  echo "  uv pip install --python ${repo_root}/.venv 'iree-base-compiler==3.14.0'" >&2
   exit 1
 fi
 

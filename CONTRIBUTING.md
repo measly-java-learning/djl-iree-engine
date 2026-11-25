@@ -25,10 +25,10 @@ exception). You do need an ordinary C++ toolchain, for the JNI shim in `native/`
   (`native/build.sh`, which defaults to `-DIREE_DJL_BUILD_TESTS=OFF`) does not fetch Catch2
   at all.
 
-`iree-compile` from pip is needed **only** if you want to regenerate the test fixture
-(`add.vmfb`), which is otherwise committed:
-`uv pip install iree-base-compiler==3.11.0`. This is the version paired with the dist's linked
-runtime (`e4a3b040`, stable tag `v3.11.0`) per its `manifest.json` — no more nightly-chasing. The
+`iree-compile` from pip is needed **only** if you want to regenerate the test fixtures
+(`src/test/resources/models/`), which are otherwise committed:
+`uv pip install iree-base-compiler==3.14.0`. This is the version paired with the dist's linked
+runtime (`runtime_commit` and `iree_compile_version`) per its `manifest.json` — no more nightly-chasing. The
 pip `iree-base-runtime` wheel is still not usable at any version; it ships no headers and no
 linkable library, which is exactly why the dist artifact exists.
 
@@ -280,7 +280,7 @@ Two requirements, both checked by the script:
 itself changes:
 
 ```bash
-uv pip install iree-base-compiler==3.11.0
+uv pip install iree-base-compiler==3.14.0
 ./tools/export_add.sh
 ```
 

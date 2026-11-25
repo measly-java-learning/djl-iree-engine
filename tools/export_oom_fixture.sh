@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # OOM-contract fixture for the JNI output-marshalling tests (IreeNativeOomTest,
 # ./gradlew oomTest). Peer of export_bigscale.sh: same compiler pin
-# (iree-base-compiler MUST be 3.11.0 to match the linked runtime commit
-# e4a3b0405d7d23554da26403658d0e8c3c5ecf25), same --iree-hal flags, same
+# (iree-base-compiler MUST be 3.14.0 to match the linked runtime commit
+# 5332c68297a68fafd596277d7686f91009ebf1cb), same --iree-hal flags, same
 # IREE_TARGET_TRIPLE pass-through.
 #
 # Writes a single splat module: one f32 input, one 134217728-element f32 output
@@ -25,7 +25,7 @@ IREE_COMPILE="${IREE_COMPILE:-${repo_root}/.venv/bin/iree-compile}"
 
 if [[ ! -x "${IREE_COMPILE}" ]]; then
   echo "missing ${IREE_COMPILE}. Install with:" >&2
-  echo "  uv pip install --python ${repo_root}/.venv 'iree-base-compiler==3.11.0'" >&2
+  echo "  uv pip install --python ${repo_root}/.venv 'iree-base-compiler==3.14.0'" >&2
   exit 1
 fi
 
