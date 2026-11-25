@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Regenerates the IRPA fixtures. Peer of export_add.sh; see that file for
-# the compiler-version pairing rationale (iree-base-compiler MUST be 3.11.0 to
-# match the linked runtime commit e4a3b0405d7d23554da26403658d0e8c3c5ecf25).
+# the compiler-version pairing rationale (iree-base-compiler MUST be 3.14.0 to
+# match the linked runtime commit 5332c68297a68fafd596277d7686f91009ebf1cb).
 #
 # Entry point is "module.scale" (fully qualified) for the runtime API, but
 # iree-run-module's --function= takes the unqualified "scale".
@@ -23,7 +23,7 @@ IREE_CREATE_PARAMS="${IREE_CREATE_PARAMS:-${repo_root}/.venv/bin/iree-create-par
 for tool in "${IREE_COMPILE}" "${IREE_CREATE_PARAMS}"; do
   if [[ ! -x "${tool}" ]]; then
     echo "missing ${tool}. Install with:" >&2
-    echo "  uv pip install --python ${repo_root}/.venv 'iree-base-compiler==3.11.0'" >&2
+    echo "  uv pip install --python ${repo_root}/.venv 'iree-base-compiler==3.14.0'" >&2
     exit 1
   fi
 done

@@ -26,17 +26,17 @@
 #
 # IMPORTANT - compiler must match the LINKED runtime, not just any pip release:
 # the dist's manifest.json records the pairing contract directly --
-#   iree_compile_version: "3.11.0"
-#   runtime_commit:        e4a3b0405d7d23554da26403658d0e8c3c5ecf25
-#   iree_tag:               v3.11.0
-# so the correct compiler is stable `iree-base-compiler==3.11.0` from pip's
-# plain index (`uv pip install --python .venv 'iree-base-compiler==3.11.0'`) --
+#   iree_compile_version: "3.14.0"
+#   runtime_commit:        5332c68297a68fafd596277d7686f91009ebf1cb
+#   iree_tag:               v3.14.0
+# so the correct compiler is stable `iree-base-compiler==3.14.0` from pip's
+# plain index (`uv pip install --python .venv 'iree-base-compiler==3.14.0'`) --
 # never a nightly, never --find-links, never a `main`/from-source checkout.
 # Mixing a main-branch runtime with a stable compiler (or vice versa) produces
 # an import-signature mismatch at load; both sides of the pair must be the same
 # tagged, stable release. Confirmed: the
 # installed compiler's own --version output embeds commit
-# e4a3b0405d7d23554da26403658d0e8c3c5ecf25, matching the dist's
+# 5332c68297a68fafd596277d7686f91009ebf1cb, matching the dist's
 # runtime_commit exactly.
 set -euo pipefail
 
@@ -50,12 +50,12 @@ IREE_COMPILE="${IREE_COMPILE:-$(command -v iree-compile || echo "${repo_root}/.v
 
 if [[ ! -x "${IREE_COMPILE}" ]] && ! command -v "${IREE_COMPILE}" >/dev/null 2>&1; then
   echo "iree-compile not found (looked for '${IREE_COMPILE}'). Install it with:" >&2
-  echo "  uv pip install --python ${repo_root}/.venv 'iree-base-compiler==3.11.0'" >&2
+  echo "  uv pip install --python ${repo_root}/.venv 'iree-base-compiler==3.14.0'" >&2
   exit 1
 fi
 
 # --iree-hal-target-device / --iree-hal-local-target-device-backends is the
-# flag spelling 3.11.0 accepts; compilers older than that want
+# flag spelling 3.11.0+ accepts; compilers older than that want
 # --iree-hal-target-backends=llvm-cpu instead.
 #
 # target-cpu=generic ALWAYS, matching export_scale.sh. This fixture is committed

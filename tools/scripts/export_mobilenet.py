@@ -4,6 +4,8 @@
 #   "torch==2.12.1",
 #   "torchvision==0.27.1",
 #   "iree-turbine==3.9.0",
+#   "iree-base-compiler==3.14.0",
+#   "iree-base-runtime==3.14.0",
 # ]
 #
 # [tool.uv.sources]
@@ -28,16 +30,16 @@ Writes into the current working directory:
 The `[tool.uv]` index override pulls torch/torchvision from the CPU-only wheel index
 (download.pytorch.org/whl/cpu) so this script doesn't drag in multi-GB CUDA dependencies.
 
-TODO(ABI enforcement): the `.vmfb` here is produced by iree-turbine 3.9.0's *bundled*
-iree-compile, NOT the iree-base-compiler 3.11.0 that the iree-runtime-dist pairing
-contract names for the linked runtime (runtime commit e4a3b040, vm_bytecode_version in
-its manifest.json). It currently loads because the VM bytecode / HAL import ABI happened
-to stay compatible across 3.9 -> 3.11 — that compatibility is coincidental and unenforced,
-and is exactly the version-skew class that broke loading during the skeleton build
-(`hal version mismatch; have 6 but require 7`). Before relying on this for more models or
-across a dist bump, enforce the ABI: either export with iree-base-compiler==3.11.0 to honor
-the contract, or assert the produced module's vm_bytecode_version against the dist manifest
-and fail the export on mismatch. Tracked for manual follow-up.
+Compiler pairing: iree-turbine declares `iree-base-compiler` with no version bound, so
+left alone uv resolves whichever compiler it likes. The dependency block above pins it to
+the version the iree-runtime-dist pairing contract names for the linked runtime
+(`iree_compile_version` in the dist's manifest.json). Bump it together with
+native/cmake/IreeRuntimePin.cmake. A mismatch does not fail here; it fails at load with a
+VM import signature mismatch, as it did on the v3.14.0-1 bump with turbine's
+unpinned resolution (`hal.command_buffer.dispatch signature mismatch`).
+
+TODO(ABI enforcement): nothing asserts the pairing mechanically. Assert the produced
+module's vm_bytecode_version against the dist manifest and fail the export on mismatch.
 """
 import json
 from importlib.metadata import PackageNotFoundError, version
@@ -93,6 +95,8 @@ def main() -> None:
             {
                 "torch": _v("torch"),
                 "torchvision": _v("torchvision"),
+                "iree-base-compiler": _v("iree-base-compiler"),
+                "iree-turbine": _v("iree-turbine"),
             },
             f,
             indent=2,
