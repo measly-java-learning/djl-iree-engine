@@ -48,8 +48,8 @@ repositories { mavenCentral() }
 
 dependencies {
     implementation("ai.djl:api:0.40.0")
-    implementation("org.measly:djl-iree-engine:1.4.0")
-    runtimeOnly("org.measly:djl-iree-engine:1.4.0") {
+    implementation("org.measly:djl-iree-engine:2.0.0")
+    runtimeOnly("org.measly:djl-iree-engine:2.0.0") {
         // Pick the platform that matches the runtime host:
         // linux-x86_64, linux-aarch64, or windows-x86_64.
         capabilities { requireCapability("org.measly:djl-iree-engine-linux-x86_64") }
@@ -182,6 +182,12 @@ loaded DLL, so every run would leak a full copy; the stable per-content director
 across runs and across concurrent JVMs instead. Set `IREE_LIBRARY_PATH` to load a specific
 library and bypass extraction entirely.
 
+## Upgrading to 2.0
+
+2.0 moves the linked runtime from IREE 3.11 to 3.14, which changes the HAL import ABI. A `.vmfb`
+compiled by `iree-base-compiler` 3.11 fails to load on 2.0, so recompile your models with
+`iree-base-compiler==3.14.0`. The Java API is unchanged. 2.0 also builds against DJL 0.40.0.
+
 ## Runtime requirements
 
 - **JDK 17** or newer.
@@ -198,7 +204,7 @@ prerequisites live in [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
 `Model.load` can pull weights from IREE parameter archives (`.irpa`) alongside the `.vmfb`: the
 model artifact names them in a manifest JSON document, and each archive is bound to the runtime
-scope the compiled program references. Two obligations before you start:
+scope the compiled program references. Three obligations before you start:
 
 - **Unarchive before loading.** This engine accepts no zip/tar and extracts nothing on the
   caller's behalf. A zipped `.irpa` must be materialised in full first; path-passing exists
@@ -207,6 +213,11 @@ scope the compiled program references. Two obligations before you start:
   `--iree-llvmcpu-target-cpu=host` on a modern machine faults with an illegal instruction
   (SIGILL) on an older one. Compile for a baseline target until tier selection exists. This
   applies to models you compile; the fixtures in this repository are already built that way.
+- **Compile with the paired `iree-base-compiler`.** Each engine release links one IREE runtime,
+  named by `IreeRuntimeInfo.DIST_TAG` (an `iree-runtime-dist` tag such as `v3.14.0-1`). Compile
+  with the `iree-base-compiler` of that same IREE version (`3.14.0` for that tag). A `.vmfb`
+  from a different compiler version can fail at `Model.load` with a VM import signature
+  mismatch, and an engine upgrade that moves the runtime can require recompiling every model.
 
 ### Manifest schema (v1)
 
